@@ -2,91 +2,11 @@
 
 #include "llama-memory-recurrent.h"
 
-#include <vector>
-
-// Custom ops for HGRN-Bit (MatMul-Free LM). ggml has no native op for either of these, so
-// they run as plain CPU callbacks via ggml_custom_4d instead of new GGML_OP_* types - see
-// matmulfreellmCPU/cpp/src/kernels/{bitlinear,hgrn_scan}.cpp for the reference this is ported
-// from (ActQuant::Float mode: no activation quantization, matches the published HF model).
-
-// y = (x_norm @ wq) / scale_w, wq in {-1,0,+1}. src[0]=x_norm [in,T] f32, src[1]=wq [in,out] i8,
-// src[2]=scale_w [1] f32. dst = [out,T] f32.
-static void hgrn_ternary_matmul_cb(struct ggml_tensor * dst, int ith, int nth, void * userdata) {
-    GGML_UNUSED(userdata);
-
-    const struct ggml_tensor * x  = dst->src[0];
-    const struct ggml_tensor * wq = dst->src[1];
-    const struct ggml_tensor * sc = dst->src[2];
-
-    const int64_t in_dim  = x->ne[0];
-    const int64_t n_tok   = x->ne[1];
-    const int64_t out_dim = wq->ne[1];
-
-    const float  * xd = (const float  *) x->data;
-    const int8_t * wd = (const int8_t *) wq->data;
-    const float scale_w = *(const float *) sc->data;
-
-    float * yd = (float *) dst->data;
-
-    for (int64_t o = ith; o < out_dim; o += nth) {
-        const int8_t * wrow = wd + o * in_dim;
-        for (int64_t t = 0; t < n_tok; ++t) {
-            const float * xrow = xd + t * in_dim;
-            float acc = 0.0f;
-            for (int64_t k = 0; k < in_dim; ++k) {
-                acc += xrow[k] * (float) wrow[k];
-            }
-            yd[t * out_dim + o] = acc / scale_w;
-        }
-    }
-}
-
-// gated linear recurrence: h_t = f_t*h_{t-1} + i_t, y_t = h_t, scanned per (head, seq) stream.
-// src[0]=i [D,H,T,S] f32, src[1]=f [D,H,T,S] f32, src[2]=state_in [D,H,S] f32.
-// dst = 1D f32, [ y (D*H*T*S) ; state_out (D*H*S) ] concatenated, split by the caller.
-static void hgrn_scan_cb(struct ggml_tensor * dst, int ith, int nth, void * userdata) {
-    GGML_UNUSED(userdata);
-
-    const struct ggml_tensor * ti = dst->src[0];
-    const struct ggml_tensor * tf = dst->src[1];
-    const struct ggml_tensor * ts = dst->src[2];
-
-    const int64_t D = ti->ne[0];
-    const int64_t H = ti->ne[1];
-    const int64_t T = ti->ne[2];
-    const int64_t S = ti->ne[3];
-
-    const float * id = (const float *) ti->data;
-    const float * fd = (const float *) tf->data;
-    const float * s0 = (const float *) ts->data;
-
-    float * yout = (float *) dst->data;
-    float * sout = yout + D * H * T * S;
-
-    std::vector<float> state(D);
-
-    const int64_t n_streams = H * S;
-    for (int64_t st = ith; st < n_streams; st += nth) {
-        const int64_t h = st % H;
-        const int64_t s = st / H;
-
-        const float * state_init = s0 + (s * H + h) * D;
-        std::copy(state_init, state_init + D, state.begin());
-
-        for (int64_t t = 0; t < T; ++t) {
-            const float * irow = id + ((s * T + t) * H + h) * D;
-            const float * frow = fd + ((s * T + t) * H + h) * D;
-            float       * yrow = yout + ((s * T + t) * H + h) * D;
-            for (int64_t d = 0; d < D; ++d) {
-                state[d] = frow[d] * state[d] + irow[d];
-                yrow[d]  = state[d];
-            }
-        }
-
-        float * srow = sout + (s * H + h) * D;
-        std::copy(state.begin(), state.end(), srow);
-    }
-}
+// HGRN-Bit (MatMul-Free LM) ternary BitLinear + gated recurrence are ggml_hgrn_ternary_mm /
+// ggml_hgrn_scan (ggml.h), first-class ops with CPU (ggml-cpu/ops.cpp) and Metal
+// (ggml-metal.metal) implementations, ported from matmulfreellmCPU/cpp/src/kernels/
+// {bitlinear,hgrn_scan}.cpp (ActQuant::Float mode: no activation quantization, matches the
+// published HF model).
 
 void llama_model_hgrnbit::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
@@ -154,10 +74,7 @@ ggml_tensor * llama_model_hgrnbit::graph::build_hgrn_bitlinear(
     cur = build_norm(cur, norm, nullptr, LLM_NORM_RMS, il);
     cur = ggml_cont(ctx0, cur);
 
-    ggml_tensor * args[3] = { cur, wq, scale };
-
-    ggml_tensor * y = ggml_custom_4d(ctx0, GGML_TYPE_F32, wq->ne[1], cur->ne[1], cur->ne[2], cur->ne[3],
-                                      args, 3, hgrn_ternary_matmul_cb, GGML_N_TASKS_MAX, nullptr);
+    ggml_tensor * y = ggml_hgrn_ternary_mm(ctx0, cur, wq, scale);
     cb(y, "hgrn_bitlinear", il);
 
     return y;
@@ -187,9 +104,7 @@ ggml_tensor * llama_model_hgrnbit::graph::build_hgrn_scan(
     const int64_t n_y = head_dim * n_head_l * n_seq_tokens * n_seqs;
     const int64_t n_s = head_dim * n_head_l * n_seqs;
 
-    ggml_tensor * args[3] = { i4, f4, s3 };
-    ggml_tensor * scan_out = ggml_custom_4d(ctx0, GGML_TYPE_F32, n_y + n_s, 1, 1, 1,
-                                             args, 3, hgrn_scan_cb, GGML_N_TASKS_MAX, nullptr);
+    ggml_tensor * scan_out = ggml_hgrn_scan(ctx0, i4, f4, s3);
     cb(scan_out, "hgrn_scan", il);
 
     ggml_tensor * y         = ggml_view_1d(ctx0, scan_out, n_y, 0);

@@ -339,6 +339,28 @@ struct llama_layer {
     struct ggml_tensor * ffn_exp_probs_b = nullptr;
     struct ggml_tensor * ffn_gate_tid2eid = nullptr;
 
+    // hgrnbit: six ternary BitLinear projections, each with its own inner RMSNorm
+    // weight and per-tensor ternary dequant scale, plus the recurrence gate norm
+    struct ggml_tensor * hgrn_iproj        = nullptr;
+    struct ggml_tensor * hgrn_iproj_norm   = nullptr;
+    struct ggml_tensor * hgrn_iproj_scale  = nullptr;
+    struct ggml_tensor * hgrn_fproj        = nullptr;
+    struct ggml_tensor * hgrn_fproj_norm   = nullptr;
+    struct ggml_tensor * hgrn_fproj_scale  = nullptr;
+    struct ggml_tensor * hgrn_gproj        = nullptr;
+    struct ggml_tensor * hgrn_gproj_norm   = nullptr;
+    struct ggml_tensor * hgrn_gproj_scale  = nullptr;
+    struct ggml_tensor * hgrn_oproj        = nullptr;
+    struct ggml_tensor * hgrn_oproj_norm   = nullptr;
+    struct ggml_tensor * hgrn_oproj_scale  = nullptr;
+    struct ggml_tensor * hgrn_gateproj       = nullptr;
+    struct ggml_tensor * hgrn_gateproj_norm  = nullptr;
+    struct ggml_tensor * hgrn_gateproj_scale = nullptr;
+    struct ggml_tensor * hgrn_downproj       = nullptr;
+    struct ggml_tensor * hgrn_downproj_norm  = nullptr;
+    struct ggml_tensor * hgrn_downproj_scale = nullptr;
+    struct ggml_tensor * hgrn_g_norm       = nullptr;
+
     // mamba proj
     struct ggml_tensor * ssm_in  = nullptr;
     struct ggml_tensor * ssm_x   = nullptr;
@@ -571,6 +593,13 @@ struct llama_model {
     struct ggml_tensor * output          = nullptr;
     struct ggml_tensor * output_b        = nullptr;
     struct ggml_tensor * output_norm_enc = nullptr;
+
+    // hgrnbit: lm_head is itself a ternary BitLinear, with its own inner norm and scale
+    struct ggml_tensor * output_bitnorm  = nullptr;
+    struct ggml_tensor * output_bitscale = nullptr;
+
+    // hgrnbit: precomputed per-layer forget-gate lower bound, [n_embd, n_layer]
+    struct ggml_tensor * hgrn_lower_bounds = nullptr;
 
 
     // NVFP4 per-tensor scale2, input_scale for LM head

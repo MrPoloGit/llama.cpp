@@ -10460,6 +10460,90 @@ void ggml_compute_forward_rwkv_wkv6(
     }
 }
 
+// ggml_compute_forward_hgrn_ternary_mm
+
+void ggml_compute_forward_hgrn_ternary_mm(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * x  = dst->src[0];
+    const ggml_tensor * wq = dst->src[1];
+    const ggml_tensor * sc = dst->src[2];
+
+    const int64_t in_dim  = x->ne[0];
+    const int64_t n_tok   = x->ne[1] * x->ne[2] * x->ne[3];
+    const int64_t out_dim = wq->ne[1];
+
+    const float  * xd = (const float  *) x->data;
+    const int8_t * wd = (const int8_t *) wq->data;
+    const float scale_w = *(const float *) sc->data;
+
+    float * yd = (float *) dst->data;
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    for (int64_t o = ith; o < out_dim; o += nth) {
+        const int8_t * wrow = wd + o * in_dim;
+        for (int64_t t = 0; t < n_tok; ++t) {
+            const float * xrow = xd + t * in_dim;
+            float acc = 0.0f;
+            for (int64_t k = 0; k < in_dim; ++k) {
+                acc += xrow[k] * (float) wrow[k];
+            }
+            yd[t * out_dim + o] = acc / scale_w;
+        }
+    }
+}
+
+// ggml_compute_forward_hgrn_scan
+
+void ggml_compute_forward_hgrn_scan(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * ti = dst->src[0];
+    const ggml_tensor * tf = dst->src[1];
+    const ggml_tensor * ts = dst->src[2];
+
+    const int64_t D = ti->ne[0];
+    const int64_t H = ti->ne[1];
+    const int64_t T = ti->ne[2];
+    const int64_t S = ti->ne[3];
+
+    const float * id = (const float *) ti->data;
+    const float * fd = (const float *) tf->data;
+    const float * s0 = (const float *) ts->data;
+
+    float * yout = (float *) dst->data;
+    float * sout = yout + D * H * T * S;
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    std::vector<float> state(D);
+
+    const int64_t n_streams = H * S;
+    for (int64_t st = ith; st < n_streams; st += nth) {
+        const int64_t h = st % H;
+        const int64_t s = st / H;
+
+        const float * state_init = s0 + (s * H + h) * D;
+        std::copy(state_init, state_init + D, state.begin());
+
+        for (int64_t t = 0; t < T; ++t) {
+            const float * irow = id + ((s * T + t) * H + h) * D;
+            const float * frow = fd + ((s * T + t) * H + h) * D;
+            float       * yrow = yout + ((s * T + t) * H + h) * D;
+            for (int64_t d = 0; d < D; ++d) {
+                state[d] = frow[d] * state[d] + irow[d];
+                yrow[d]  = state[d];
+            }
+        }
+
+        float * srow = sout + (s * H + h) * D;
+        std::copy(state.begin(), state.end(), srow);
+    }
+}
+
 // ggml_compute_forward_gla
 
 static void ggml_compute_forward_gla_f32(

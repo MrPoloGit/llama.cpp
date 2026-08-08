@@ -2640,6 +2640,72 @@ kernel void kernel_rwkv_wkv7_f32(
     }
 }
 
+// HGRN-Bit (MatMul-Free LM): y = (x_norm @ wq) / scale_w, wq in {-1,0,+1}
+// one thread per (o, t) output element, full serial dot product over in_dim
+kernel void kernel_hgrn_ternary_mm_f32(
+        device const float   * x,
+        device const int8_t  * wq,
+        device const float   * scale,
+        device       float   * dst,
+        constant     int64_t & in_dim,
+        constant     int64_t & out_dim,
+        constant     int64_t & n_tok,
+        uint3 tgpig[[threadgroup_position_in_grid]]) {
+    const int64_t gid = tgpig.x;
+    if (gid >= out_dim * n_tok) {
+        return;
+    }
+
+    const int64_t o = gid % out_dim;
+    const int64_t t = gid / out_dim;
+
+    device const float  * xrow = x  + t * in_dim;
+    device const int8_t * wrow = wq + o * in_dim;
+
+    float acc = 0.0f;
+    for (int64_t k = 0; k < in_dim; k++) {
+        acc += xrow[k] * (float) wrow[k];
+    }
+
+    dst[t * out_dim + o] = acc / scale[0];
+}
+
+// HGRN-Bit gated linear recurrence: h_t = f_t*h_{t-1} + i_t, y_t = h_t
+// state is purely elementwise (no cross-dim mixing), so one thread scans each (d, h, s)
+// independently over all T steps; dst = [ y (D*H*T*S) ; new state (D*H*S) ]
+kernel void kernel_hgrn_scan_f32(
+        device const float   * ii,
+        device const float   * ff,
+        device const float   * state_in,
+        device       float   * dst,
+        constant     int64_t & D,
+        constant     int64_t & H,
+        constant     int64_t & T,
+        constant     int64_t & S,
+        uint3 tgpig[[threadgroup_position_in_grid]]) {
+    const int64_t gid = tgpig.x;
+    if (gid >= D * H * S) {
+        return;
+    }
+
+    const int64_t d = gid % D;
+    const int64_t h = (gid / D) % H;
+    const int64_t s = gid / (D * H);
+
+    float state = state_in[(s * H + h) * D + d];
+
+    device float * yout = dst;
+    device float * sout = dst + D * H * T * S;
+
+    for (int64_t t = 0; t < T; t++) {
+        const int64_t off = ((s * T + t) * H + h) * D + d;
+        state = ff[off] * state + ii[off];
+        yout[off] = state;
+    }
+
+    sout[(s * H + h) * D + d] = state;
+}
+
 constant short FC_gated_delta_net_ne20 [[function_constant(FC_GATED_DELTA_NET + 0)]];
 constant short FC_gated_delta_net_ne30 [[function_constant(FC_GATED_DELTA_NET + 1)]];
 constant short FC_gated_delta_net_K    [[function_constant(FC_GATED_DELTA_NET + 2)]];

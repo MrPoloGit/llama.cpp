@@ -2044,6 +2044,14 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_rwkv_wkv6(params, tensor);
             } break;
+        case GGML_OP_HGRN_TERNARY_MM:
+            {
+                ggml_compute_forward_hgrn_ternary_mm(params, tensor);
+            } break;
+        case GGML_OP_HGRN_SCAN:
+            {
+                ggml_compute_forward_hgrn_scan(params, tensor);
+            } break;
         case GGML_OP_GATED_LINEAR_ATTN:
             {
                 ggml_compute_forward_gla(params, tensor);
@@ -2400,6 +2408,8 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_SSM_CONV:
         case GGML_OP_SSM_SCAN:
         case GGML_OP_LIGHTNING_INDEXER:
+        case GGML_OP_HGRN_TERNARY_MM:
+        case GGML_OP_HGRN_SCAN:
             {
                 n_tasks = n_threads;
             } break;

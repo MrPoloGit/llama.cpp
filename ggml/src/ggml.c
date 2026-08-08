@@ -1083,6 +1083,8 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "DSV4_HC_COMB",
     "DSV4_HC_PRE",
     "DSV4_HC_POST",
+    "HGRN_TERNARY_MM",
+    "HGRN_SCAN",
 
     "UNARY",
 
@@ -1100,7 +1102,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1198,6 +1200,8 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "dsv4_hc_comb(mixes, scale, base)",
     "dsv4_hc_pre(x, weights)",
     "dsv4_hc_post(x, residual, post, comb)",
+    "hgrn_ternary_mm(x_norm, wq, scale_w)",
+    "hgrn_scan(i, f, s)",
 
     "unary(x)",
 
@@ -1215,7 +1219,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -5888,6 +5892,65 @@ struct ggml_tensor * ggml_rwkv_wkv7(
     result->src[4] = a;
     result->src[5] = b;
     result->src[6] = state;
+
+    return result;
+}
+
+// ggml_hgrn_ternary_mm
+
+struct ggml_tensor * ggml_hgrn_ternary_mm(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * x_norm,
+        struct ggml_tensor  * wq,
+        struct ggml_tensor  * scale_w) {
+    GGML_ASSERT(ggml_is_contiguous(x_norm));
+    GGML_ASSERT(ggml_is_contiguous(wq));
+    GGML_ASSERT(x_norm->type == GGML_TYPE_F32);
+    GGML_ASSERT(wq->type == GGML_TYPE_I8);
+    GGML_ASSERT(scale_w->type == GGML_TYPE_F32);
+    GGML_ASSERT(ggml_nelements(scale_w) == 1);
+    GGML_ASSERT(x_norm->ne[0] == wq->ne[0]);
+
+    const int64_t ne[4] = { wq->ne[1], x_norm->ne[1], x_norm->ne[2], x_norm->ne[3] };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_HGRN_TERNARY_MM;
+    result->src[0] = x_norm;
+    result->src[1] = wq;
+    result->src[2] = scale_w;
+
+    return result;
+}
+
+// ggml_hgrn_scan
+
+struct ggml_tensor * ggml_hgrn_scan(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * i,
+        struct ggml_tensor  * f,
+        struct ggml_tensor  * state) {
+    GGML_ASSERT(ggml_is_contiguous(i));
+    GGML_ASSERT(ggml_is_contiguous(f));
+    GGML_ASSERT(ggml_is_contiguous(state));
+    GGML_ASSERT(i->type == GGML_TYPE_F32);
+    GGML_ASSERT(f->type == GGML_TYPE_F32);
+    GGML_ASSERT(state->type == GGML_TYPE_F32);
+
+    const int64_t D = i->ne[0];
+    const int64_t H = i->ne[1];
+    const int64_t T = i->ne[2];
+    const int64_t S = i->ne[3];
+    GGML_ASSERT(f->ne[0] == D && f->ne[1] == H && f->ne[2] == T && f->ne[3] == S);
+    GGML_ASSERT(ggml_nelements(state) == D * H * S);
+
+    // concat output and new_state, flat
+    const int64_t ne[4] = { D * H * T * S + D * H * S, 1, 1, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_HGRN_SCAN;
+    result->src[0] = i;
+    result->src[1] = f;
+    result->src[2] = state;
 
     return result;
 }

@@ -347,6 +347,14 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
             {
                 n_fuse = ggml_metal_op_rwkv(ctx, idx);
             } break;
+        case GGML_OP_HGRN_TERNARY_MM:
+            {
+                n_fuse = ggml_metal_op_hgrn_ternary_mm(ctx, idx);
+            } break;
+        case GGML_OP_HGRN_SCAN:
+            {
+                n_fuse = ggml_metal_op_hgrn_scan(ctx, idx);
+            } break;
         case GGML_OP_GATED_DELTA_NET:
             {
                 n_fuse = ggml_metal_op_gated_delta_net(ctx, idx);
@@ -1806,6 +1814,64 @@ int ggml_metal_op_rwkv(ggml_metal_op_t ctx, int idx) {
     ggml_metal_encoder_set_bytes   (enc, (void *) &H, sizeof(H), ida++);
 
     ggml_metal_encoder_dispatch_threadgroups(enc, B * H, 1, 1, C/H, 1, 1);
+
+    return 1;
+}
+
+int ggml_metal_op_hgrn_ternary_mm(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    const int64_t in_dim  = op->src[0]->ne[0];
+    const int64_t out_dim = op->src[1]->ne[1];
+    const int64_t n_tok   = op->src[0]->ne[1] * op->src[0]->ne[2] * op->src[0]->ne[3];
+
+    auto pipeline = ggml_metal_library_get_pipeline_hgrn(lib, op);
+
+    int ida = 0;
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[0]), ida++);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[1]), ida++);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[2]), ida++);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         ida++);
+    ggml_metal_encoder_set_bytes   (enc, (void *) &in_dim,  sizeof(in_dim),  ida++);
+    ggml_metal_encoder_set_bytes   (enc, (void *) &out_dim, sizeof(out_dim), ida++);
+    ggml_metal_encoder_set_bytes   (enc, (void *) &n_tok,   sizeof(n_tok),   ida++);
+
+    ggml_metal_encoder_dispatch_threadgroups(enc, out_dim * n_tok, 1, 1, 1, 1, 1);
+
+    return 1;
+}
+
+int ggml_metal_op_hgrn_scan(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    const int64_t D = op->src[0]->ne[0];
+    const int64_t H = op->src[0]->ne[1];
+    const int64_t T = op->src[0]->ne[2];
+    const int64_t S = op->src[0]->ne[3];
+
+    auto pipeline = ggml_metal_library_get_pipeline_hgrn(lib, op);
+
+    int ida = 0;
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[0]), ida++);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[1]), ida++);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[2]), ida++);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         ida++);
+    ggml_metal_encoder_set_bytes   (enc, (void *) &D, sizeof(D), ida++);
+    ggml_metal_encoder_set_bytes   (enc, (void *) &H, sizeof(H), ida++);
+    ggml_metal_encoder_set_bytes   (enc, (void *) &T, sizeof(T), ida++);
+    ggml_metal_encoder_set_bytes   (enc, (void *) &S, sizeof(S), ida++);
+
+    ggml_metal_encoder_dispatch_threadgroups(enc, D * H * S, 1, 1, 1, 1, 1);
 
     return 1;
 }

@@ -574,6 +574,8 @@ extern "C" {
         GGML_OP_DSV4_HC_COMB,
         GGML_OP_DSV4_HC_PRE,
         GGML_OP_DSV4_HC_POST,
+        GGML_OP_HGRN_TERNARY_MM,
+        GGML_OP_HGRN_SCAN,
 
         GGML_OP_UNARY,
 
@@ -2537,6 +2539,22 @@ extern "C" {
             struct ggml_tensor  * v,
             struct ggml_tensor  * a,
             struct ggml_tensor  * b,
+            struct ggml_tensor  * state);
+
+    // HGRN-Bit (MatMul-Free LM) ternary BitLinear: y = (x_norm @ wq) / scale_w, wq in {-1,0,+1}
+    // x_norm: [in, T, ...] f32, wq: [in, out] i8, scale_w: [1] f32 -> [out, T, ...] f32
+    GGML_API struct ggml_tensor * ggml_hgrn_ternary_mm(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * x_norm,
+            struct ggml_tensor  * wq,
+            struct ggml_tensor  * scale_w);
+
+    // HGRN-Bit gated linear recurrence: h_t = f_t*h_{t-1} + i_t, y_t = h_t
+    // i, f: [D, H, T, S] f32, state: [D, H, S] f32 -> flat f32 [D*H*T*S + D*H*S] (y ; new state)
+    GGML_API struct ggml_tensor * ggml_hgrn_scan(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * i,
+            struct ggml_tensor  * f,
             struct ggml_tensor  * state);
 
     /* Solves a specific equation of the form Ax=B, where A is a triangular matrix

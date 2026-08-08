@@ -635,6 +635,34 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_rwkv(ggml_metal_
     return res;
 }
 
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_hgrn(ggml_metal_library_t lib, const ggml_tensor * op) {
+    char base[256];
+    char name[256];
+
+    switch (op->op) {
+        case GGML_OP_HGRN_TERNARY_MM:
+            {
+                GGML_ASSERT(op->src[1]->type == GGML_TYPE_I8);
+                snprintf(base, 256, "kernel_hgrn_ternary_mm_%s", ggml_type_name(op->src[0]->type));
+            } break;
+        case GGML_OP_HGRN_SCAN:
+            {
+                snprintf(base, 256, "kernel_hgrn_scan_%s", ggml_type_name(op->src[0]->type));
+            } break;
+        default:
+            GGML_ABORT("fatal error");
+    }
+
+    snprintf(name, 256, "%s", base);
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, base, name, nullptr);
+    }
+
+    return res;
+}
+
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_gated_delta_net(ggml_metal_library_t lib, const ggml_tensor * op) {
     char base[256];
     char name[256];
