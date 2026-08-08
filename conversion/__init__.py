@@ -108,6 +108,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "Grok1ForCausalLM": "grok",
     "GrokForCausalLM": "grok",
     "GroveMoeForCausalLM": "grovemoe",
+    "HGRNBitForCausalLM": "hgrnbit",
     "HunYuanDenseV1ForCausalLM": "hunyuan",
     "HunYuanMoEV1ForCausalLM": "hunyuan",
     "HunYuanVLForConditionalGeneration": "hunyuan",

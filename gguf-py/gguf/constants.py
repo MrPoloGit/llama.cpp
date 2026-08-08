@@ -250,6 +250,9 @@ class Keys:
     class WKV:
         HEAD_SIZE = "{arch}.wkv.head_size"
 
+    class HGRNBit:
+        HEAD_DIM  = "{arch}.hgrnbit.head_dim"
+
     class PosNet:
         EMBEDDING_LENGTH = "{arch}.posnet.embedding_length"
         BLOCK_COUNT      = "{arch}.posnet.block_count"
@@ -572,6 +575,7 @@ class MODEL_ARCH(IntEnum):
     MELLUM           = auto()
     NANBEIGE         = auto()
     QWEN3TTS         = auto()
+    HGRNBIT          = auto()
 
 
 class VISION_PROJECTOR_TYPE(IntEnum):
@@ -1244,6 +1248,7 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.MELLUM:           "mellum",
     MODEL_ARCH.NANBEIGE:         "nanbeige",
     MODEL_ARCH.QWEN3TTS:         "qwen3tts",
+    MODEL_ARCH.HGRNBIT:          "hgrnbit",
 }
 
 VISION_PROJECTOR_TYPE_NAMES: dict[VISION_PROJECTOR_TYPE, str] = {
@@ -4819,6 +4824,13 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_GATE_EXP,
         MODEL_TENSOR.FFN_DOWN_EXP,
         MODEL_TENSOR.FFN_UP_EXP,
+    ],
+    MODEL_ARCH.HGRNBIT: [
+        MODEL_TENSOR.TOKEN_EMBD,
+        MODEL_TENSOR.OUTPUT_NORM,
+        MODEL_TENSOR.OUTPUT,
+        MODEL_TENSOR.ATTN_NORM,
+        MODEL_TENSOR.FFN_NORM,
     ],
     MODEL_ARCH.NANBEIGE: [
         MODEL_TENSOR.TOKEN_EMBD,

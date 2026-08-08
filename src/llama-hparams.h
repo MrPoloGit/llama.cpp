@@ -163,6 +163,9 @@ struct llama_hparams {
     // for Kimi Linear KDA
     uint32_t n_embd_head_kda = 0;
 
+    // for HGRN-Bit (MatMul-Free LM)
+    uint32_t hgrnbit_head_dim = 0;
+
     bool ssm_dt_b_c_rms = false;
 
     float f_clamp_kqv      = 0.0f;

@@ -216,6 +216,7 @@ class TensorNameMap:
             "layers.{bid}.input_layernorm",                         # qwen3-embedding
             "model.layers.{bid}.attention_layernorm",               # apertus
             "model.layers.{bid}.pre_attention_layernorm",           # kormo
+            "model.layers.{bid}.attn_norm",                         # hgrnbit
         ),
 
         # Attention norm 2
@@ -411,7 +412,8 @@ class TensorNameMap:
             "layers.{bid}.post_attention_layernorm",                         # qwen3-embedding
             "model.layers.{bid}.feedforward_layernorm",                      # apertus
             "model.layers.{bid}.pre_mlp_layernorm",                          # kormo
-            "layers.{bid}.mlp_norm"                                          # modern-bert
+            "layers.{bid}.mlp_norm",                                         # modern-bert
+            "model.layers.{bid}.mlp_norm",                                   # hgrnbit
         ),
 
         # Pre feed-forward norm

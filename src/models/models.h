@@ -1375,6 +1375,34 @@ struct llama_model_bitnet : public llama_model_base {
 };
 
 
+struct llama_model_hgrnbit : public llama_model_base {
+    llama_model_hgrnbit(const struct llama_model_params & params) : llama_model_base(params) {}
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+
+    struct graph : public llm_graph_context {
+        graph(const llama_model & model, const llm_graph_params & params);
+
+        // ternary BitLinear: y = (x_norm @ wq) / scale_w, wq in {-1,0,+1}
+        ggml_tensor * build_hgrn_bitlinear(
+                ggml_tensor * cur,
+                ggml_tensor * norm,
+                ggml_tensor * wq,
+                ggml_tensor * scale,
+                int il) const;
+
+        // gated linear recurrence: h_t = f_t*h_{t-1} + i_t, state carried across ubatches
+        ggml_tensor * build_hgrn_scan(
+                llm_graph_input_rs * inp,
+                ggml_tensor * i,
+                ggml_tensor * f,
+                int il) const;
+    };
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};
+
+
 struct llama_model_t5 : public llama_model_base {
     llama_model_t5(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;

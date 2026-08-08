@@ -145,6 +145,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_MELLUM,           "mellum"           },
     { LLM_ARCH_NANBEIGE,         "nanbeige"         },
     { LLM_ARCH_QWEN3TTS,         "qwen3tts"         },
+    { LLM_ARCH_HGRNBIT,          "hgrnbit"          },
     { LLM_ARCH_UNKNOWN,          "(unknown)"        },
 };
 
@@ -306,6 +307,8 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_KDA_HEAD_DIM, "%s.kda.head_dim" },
 
     { LLM_KV_WKV_HEAD_SIZE, "%s.wkv.head_size" },
+
+    { LLM_KV_HGRNBIT_HEAD_DIM, "%s.hgrnbit.head_dim" },
 
     { LLM_KV_POSNET_EMBEDDING_LENGTH, "%s.posnet.embedding_length" },
     { LLM_KV_POSNET_BLOCK_COUNT,      "%s.posnet.block_count"      },
@@ -573,6 +576,14 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_TIME_MIX_K_K,                           "blk.%d.time_mix_k_k" },
     { LLM_TENSOR_TIME_MIX_K_A,                           "blk.%d.time_mix_k_a" },
     { LLM_TENSOR_TIME_MIX_R_K,                           "blk.%d.time_mix_r_k" },
+    { LLM_TENSOR_HGRN_IPROJ,                             "blk.%d.hgrn_iproj" },
+    { LLM_TENSOR_HGRN_FPROJ,                             "blk.%d.hgrn_fproj" },
+    { LLM_TENSOR_HGRN_GPROJ,                             "blk.%d.hgrn_gproj" },
+    { LLM_TENSOR_HGRN_OPROJ,                             "blk.%d.hgrn_oproj" },
+    { LLM_TENSOR_HGRN_GATEPROJ,                          "blk.%d.hgrn_gateproj" },
+    { LLM_TENSOR_HGRN_DOWNPROJ,                          "blk.%d.hgrn_downproj" },
+    { LLM_TENSOR_HGRN_GNORM,                             "blk.%d.hgrn_g_norm" },
+    { LLM_TENSOR_HGRN_LOWER_BOUNDS,                      "hgrn_lower_bounds" },
     { LLM_TENSOR_CONV1D,                                 "conv1d" },
     { LLM_TENSOR_CONVNEXT_DW,                            "convnext.%d.dw" },
     { LLM_TENSOR_CONVNEXT_NORM,                          "convnext.%d.norm" },
@@ -755,6 +766,14 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_TIME_MIX_K_K,               {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_TIME_MIX_K_A,               {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_TIME_MIX_R_K,               {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_HGRN_IPROJ,                 {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_HGRN_FPROJ,                 {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_HGRN_GPROJ,                 {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_HGRN_OPROJ,                 {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_HGRN_GATEPROJ,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_HGRN_DOWNPROJ,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_HGRN_GNORM,                 {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_HGRN_LOWER_BOUNDS,          {LLM_TENSOR_LAYER_INPUT,     GGML_OP_NONE}},
     {LLM_TENSOR_TIME_MIX_LERP_W,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_ADD}},
     {LLM_TENSOR_TIME_MIX_LERP_K,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_ADD}},
     {LLM_TENSOR_TIME_MIX_LERP_V,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_ADD}},
@@ -949,6 +968,7 @@ bool llm_arch_is_recurrent(const llm_arch & arch) {
         case LLM_ARCH_RWKV6QWEN2:
         case LLM_ARCH_RWKV7:
         case LLM_ARCH_ARWKV7:
+        case LLM_ARCH_HGRNBIT:
             return true;
         default:
             return false;

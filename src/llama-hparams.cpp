@@ -198,6 +198,11 @@ uint32_t llama_hparams::n_embd_r() const {
         return 3 * (ssm_d_conv > 0 ? ssm_d_conv - 1 : 3) * d_inner;
     }
 
+    if (hgrnbit_head_dim != 0) {
+        // HGRN-Bit has no token-shift or short conv, only the scalar recurrent state below
+        return 0;
+    }
+
     // TODO: maybe support other convolution strides than 1
     // NOTE: since the first column of the conv_state is shifted out each time, it's not actually needed
     // Corresponds to Mamba's conv_states size
@@ -215,6 +220,11 @@ uint32_t llama_hparams::n_embd_s() const {
         // Full recurrent state: head_dim * head_dim * n_head
         // h tensor shape for delta attention: [head_dim, head_dim, n_head]
         return n_embd_head_kda * n_embd_head_kda * n_head();  // 128 * 128 * 32 = 524288
+    }
+
+    if (hgrnbit_head_dim != 0) {
+        // HGRN-Bit's recurrent state is one plain vector per head: h_t = f_t*h_{t-1} + i_t
+        return n_head() * hgrnbit_head_dim;
     }
 
     // corresponds to Mamba's ssm_states size

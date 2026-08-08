@@ -909,6 +909,9 @@ class GGUFWriter:
     def add_wkv_head_size(self, size: int) -> None:
         self.add_uint32(Keys.WKV.HEAD_SIZE.format(arch=self.arch), size)
 
+    def add_hgrnbit_head_dim(self, dim: int) -> None:
+        self.add_uint32(Keys.HGRNBit.HEAD_DIM.format(arch=self.arch), dim)
+
     def add_token_shift_count(self, count: int) -> None:
         self.add_uint32(Keys.LLM.TOKEN_SHIFT_COUNT.format(arch=self.arch), count)
 
