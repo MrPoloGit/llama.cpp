@@ -27,6 +27,7 @@
 #include "ggml-cuda/fattn.cuh"
 #include "ggml-cuda/fwht.cuh"
 #include "ggml-cuda/getrows.cuh"
+#include "ggml-cuda/hgrn.cuh"
 #include "ggml-cuda/im2col.cuh"
 #include "ggml-cuda/mmf.cuh"
 #include "ggml-cuda/mmq.cuh"
@@ -2327,6 +2328,12 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
             break;
         case GGML_OP_RWKV_WKV6:
             ggml_cuda_op_rwkv_wkv6(ctx, dst);
+            break;
+        case GGML_OP_HGRN_TERNARY_MM:
+            ggml_cuda_op_hgrn_ternary_mm(ctx, dst);
+            break;
+        case GGML_OP_HGRN_SCAN:
+            ggml_cuda_op_hgrn_scan(ctx, dst);
             break;
         case GGML_OP_GATED_LINEAR_ATTN:
             ggml_cuda_op_gated_linear_attn(ctx, dst);
@@ -5142,6 +5149,9 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_RWKV_WKV6:
         case GGML_OP_GATED_LINEAR_ATTN:
         case GGML_OP_RWKV_WKV7:
+            return true;
+        case GGML_OP_HGRN_TERNARY_MM:
+        case GGML_OP_HGRN_SCAN:
             return true;
         case GGML_OP_GATED_DELTA_NET:
             //TODO: enable once MUSA compiler is solved https://github.com/ggml-org/llama.cpp/pull/19504#issuecomment-4018634327
