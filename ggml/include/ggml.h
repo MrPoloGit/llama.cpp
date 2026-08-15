@@ -2542,7 +2542,11 @@ extern "C" {
             struct ggml_tensor  * state);
 
     // HGRN-Bit (MatMul-Free LM) ternary BitLinear: y = (x_norm @ wq) / scale_w, wq in {-1,0,+1}
-    // x_norm: [in, T, ...] f32, wq: [in, out] i8, scale_w: [1] f32 -> [out, T, ...] f32
+    // x_norm: [in, T, ...] f32 (in a multiple of 256), scale_w: [1] f32 -> [out, T, ...] f32
+    // wq: [in/256*52, out] i8, TQ1_0-style packed ternary weights (ggml-quants' TQ1_0 block
+    // layout minus its per-block scale: 256 ternary weights -> 52 bytes/block, 5 trits/byte
+    // via base-3 packing). See ggml_compute_forward_hgrn_ternary_mm (ggml-cpu/ops.cpp) for
+    // the unpack.
     GGML_API struct ggml_tensor * ggml_hgrn_ternary_mm(
             struct ggml_context * ctx,
             struct ggml_tensor  * x_norm,

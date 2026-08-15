@@ -2642,14 +2642,46 @@ kernel void kernel_rwkv_wkv7_f32(
 
 // HGRN-Bit (MatMul-Free LM): y = (x_norm @ wq) / scale_w, wq in {-1,0,+1}
 // one thread per (o, t) output element, full serial dot product over in_dim
+// wq rows are packed 5-trits/byte, matching ggml-quants' TQ1_0 block layout minus its
+// per-block fp16 scale (HGRN-Bit already has one scale per whole projection): 256 ternary
+// weights -> 52 bytes (48 qs + 4 qh). Ported from matmulfreellmCPU/cpp/include/mmfree/tq1.hpp
+// (trit_at / unpack_row); see ggml_compute_forward_hgrn_ternary_mm (ggml-cpu/ops.cpp) for
+// the identical CPU-side decode this mirrors.
+inline char hgrn_tq1_trit(uchar q, int l) {
+    const uchar pow3[5] = { 1, 3, 9, 27, 81 };
+    const uchar ql = (uchar) (q * pow3[l]);
+    return (char) ((ql >= 86) + (ql >= 171) - 1);
+}
+
+inline void hgrn_tq1_unpack_block(thread char * dst, device const uchar * blk) {
+    device const uchar * qs = blk;
+    device const uchar * qh = blk + 48;
+    for (int l = 0; l < 5; l++) {
+        for (int j = 0; j < 32; j++) {
+            dst[j + 32 * l] = hgrn_tq1_trit(qs[j], l);
+        }
+    }
+    for (int l = 0; l < 5; l++) {
+        for (int j = 0; j < 16; j++) {
+            dst[160 + j + 16 * l] = hgrn_tq1_trit(qs[32 + j], l);
+        }
+    }
+    for (int l = 0; l < 4; l++) {
+        for (int j = 0; j < 4; j++) {
+            dst[240 + j + 4 * l] = hgrn_tq1_trit(qh[j], l);
+        }
+    }
+}
+
 kernel void kernel_hgrn_ternary_mm_f32(
         device const float   * x,
-        device const int8_t  * wq,
+        device const uchar   * wq,
         device const float   * scale,
         device       float   * dst,
         constant     int64_t & in_dim,
         constant     int64_t & out_dim,
         constant     int64_t & n_tok,
+        constant     int64_t & row_bytes,
         uint3 tgpig[[threadgroup_position_in_grid]]) {
     const int64_t gid = tgpig.x;
     if (gid >= out_dim * n_tok) {
@@ -2658,13 +2690,19 @@ kernel void kernel_hgrn_ternary_mm_f32(
 
     const int64_t o = gid % out_dim;
     const int64_t t = gid / out_dim;
+    const int64_t n_blocks = in_dim / 256;
 
-    device const float  * xrow = x  + t * in_dim;
-    device const int8_t * wrow = wq + o * in_dim;
+    device const float * xrow    = x  + t * in_dim;
+    device const uchar * wpacked = wq + o * row_bytes;
 
     float acc = 0.0f;
-    for (int64_t k = 0; k < in_dim; k++) {
-        acc += xrow[k] * (float) wrow[k];
+    char wblk[256];
+    for (int64_t b = 0; b < n_blocks; b++) {
+        hgrn_tq1_unpack_block(wblk, wpacked + b * 52);
+        device const float * xblk = xrow + b * 256;
+        for (int64_t k = 0; k < 256; k++) {
+            acc += xblk[k] * (float) wblk[k];
+        }
     }
 
     dst[t * out_dim + o] = acc / scale[0];

@@ -10461,6 +10461,38 @@ void ggml_compute_forward_rwkv_wkv6(
 }
 
 // ggml_compute_forward_hgrn_ternary_mm
+//
+// wq rows are packed 5-trits/byte, matching ggml-quants' TQ1_0 block layout minus its
+// per-block fp16 scale (HGRN-Bit already has one scale per whole projection): 256 ternary
+// weights -> 52 bytes (48 qs + 4 qh). Ported from matmulfreellmCPU/cpp/include/mmfree/tq1.hpp
+// (trit_at / unpack_row), which documents the encode/decode math in full.
+
+static inline int8_t ggml_hgrn_tq1_trit(uint8_t q, int l) {
+    static const uint8_t pow3[5] = { 1, 3, 9, 27, 81 };
+    const uint8_t ql = (uint8_t) (q * pow3[l]);
+    return (int8_t) ((ql >= 86) + (ql >= 171) - 1);
+}
+
+// Unpack one 52-byte block (256 ternary weights) into dst[0..255].
+static inline void ggml_hgrn_tq1_unpack_block(int8_t * dst, const uint8_t * blk) {
+    const uint8_t * qs = blk;
+    const uint8_t * qh = blk + 48;
+    for (int l = 0; l < 5; ++l) {
+        for (int j = 0; j < 32; ++j) {
+            dst[j + 32 * l] = ggml_hgrn_tq1_trit(qs[j], l);
+        }
+    }
+    for (int l = 0; l < 5; ++l) {
+        for (int j = 0; j < 16; ++j) {
+            dst[160 + j + 16 * l] = ggml_hgrn_tq1_trit(qs[32 + j], l);
+        }
+    }
+    for (int l = 0; l < 4; ++l) {
+        for (int j = 0; j < 4; ++j) {
+            dst[240 + j + 4 * l] = ggml_hgrn_tq1_trit(qh[j], l);
+        }
+    }
+}
 
 void ggml_compute_forward_hgrn_ternary_mm(
         const ggml_compute_params * params,
@@ -10469,12 +10501,14 @@ void ggml_compute_forward_hgrn_ternary_mm(
     const ggml_tensor * wq = dst->src[1];
     const ggml_tensor * sc = dst->src[2];
 
-    const int64_t in_dim  = x->ne[0];
-    const int64_t n_tok   = x->ne[1] * x->ne[2] * x->ne[3];
-    const int64_t out_dim = wq->ne[1];
+    const int64_t in_dim   = x->ne[0];
+    const int64_t n_tok    = x->ne[1] * x->ne[2] * x->ne[3];
+    const int64_t out_dim  = wq->ne[1];
+    const int64_t row_bytes = wq->ne[0];
+    const int64_t n_blocks  = in_dim / 256;
 
-    const float  * xd = (const float  *) x->data;
-    const int8_t * wd = (const int8_t *) wq->data;
+    const float   * xd = (const float   *) x->data;
+    const uint8_t * wd = (const uint8_t *) wq->data;
     const float scale_w = *(const float *) sc->data;
 
     float * yd = (float *) dst->data;
@@ -10482,13 +10516,19 @@ void ggml_compute_forward_hgrn_ternary_mm(
     const int ith = params->ith;
     const int nth = params->nth;
 
+    int8_t wrow[256];
+
     for (int64_t o = ith; o < out_dim; o += nth) {
-        const int8_t * wrow = wd + o * in_dim;
+        const uint8_t * wpacked = wd + o * row_bytes;
         for (int64_t t = 0; t < n_tok; ++t) {
             const float * xrow = xd + t * in_dim;
             float acc = 0.0f;
-            for (int64_t k = 0; k < in_dim; ++k) {
-                acc += xrow[k] * (float) wrow[k];
+            for (int64_t b = 0; b < n_blocks; ++b) {
+                ggml_hgrn_tq1_unpack_block(wrow, wpacked + b * 52);
+                const float * xblk = xrow + b * 256;
+                for (int64_t k = 0; k < 256; ++k) {
+                    acc += xblk[k] * (float) wrow[k];
+                }
             }
             yd[t * out_dim + o] = acc / scale_w;
         }

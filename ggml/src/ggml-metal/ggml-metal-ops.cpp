@@ -1824,9 +1824,10 @@ int ggml_metal_op_hgrn_ternary_mm(ggml_metal_op_t ctx, int idx) {
     ggml_metal_library_t lib = ctx->lib;
     ggml_metal_encoder_t enc = ctx->enc;
 
-    const int64_t in_dim  = op->src[0]->ne[0];
-    const int64_t out_dim = op->src[1]->ne[1];
-    const int64_t n_tok   = op->src[0]->ne[1] * op->src[0]->ne[2] * op->src[0]->ne[3];
+    const int64_t in_dim    = op->src[0]->ne[0];
+    const int64_t out_dim   = op->src[1]->ne[1];
+    const int64_t n_tok     = op->src[0]->ne[1] * op->src[0]->ne[2] * op->src[0]->ne[3];
+    const int64_t row_bytes = op->src[1]->ne[0];  // TQ1_0-style packed row: in_dim/256*52
 
     auto pipeline = ggml_metal_library_get_pipeline_hgrn(lib, op);
 
@@ -1837,9 +1838,10 @@ int ggml_metal_op_hgrn_ternary_mm(ggml_metal_op_t ctx, int idx) {
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[1]), ida++);
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[2]), ida++);
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         ida++);
-    ggml_metal_encoder_set_bytes   (enc, (void *) &in_dim,  sizeof(in_dim),  ida++);
-    ggml_metal_encoder_set_bytes   (enc, (void *) &out_dim, sizeof(out_dim), ida++);
-    ggml_metal_encoder_set_bytes   (enc, (void *) &n_tok,   sizeof(n_tok),   ida++);
+    ggml_metal_encoder_set_bytes   (enc, (void *) &in_dim,    sizeof(in_dim),    ida++);
+    ggml_metal_encoder_set_bytes   (enc, (void *) &out_dim,   sizeof(out_dim),   ida++);
+    ggml_metal_encoder_set_bytes   (enc, (void *) &n_tok,     sizeof(n_tok),     ida++);
+    ggml_metal_encoder_set_bytes   (enc, (void *) &row_bytes, sizeof(row_bytes), ida++);
 
     ggml_metal_encoder_dispatch_threadgroups(enc, out_dim * n_tok, 1, 1, 1, 1, 1);
 

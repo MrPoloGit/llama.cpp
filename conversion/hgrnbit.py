@@ -7,7 +7,7 @@ from typing import Iterable, TYPE_CHECKING
 if TYPE_CHECKING:
     from torch import Tensor
 
-from .base import ModelBase, TextModel, gguf
+from .base import LazyTorchTensor, ModelBase, TextModel, gguf
 
 # (blk tensor name tag, HF weight infix under "model.layers.{bid}.") for the six
 # ternary BitLinear projections every HGRN-Bit layer has.
@@ -19,6 +19,35 @@ LAYER_PROJS = [
     ("hgrn_gateproj", "mlp.gate_proj"),
     ("hgrn_downproj", "mlp.down_proj"),
 ]
+
+
+def _pack_tq1(wq: np.ndarray) -> np.ndarray:
+    # Pack ternary weights ({-1,0,+1}, int8) into ggml-quants' TQ1_0 block layout minus its
+    # per-block fp16 scale (HGRN-Bit already has one scale per whole projection): 256 ternary
+    # weights -> 52 bytes/block (48 "qs" + 4 "qh"), 5 trits/byte via base-3 packing.
+    # ref: matmulfreellmCPU/cpp/include/mmfree/tq1.hpp pack_row() - same encode, vectorized.
+    #   group A: qs[0..31],  5 trits each -> elements j + 32*l   (j<32, l<5) = elements 0..159
+    #   group B: qs[32..47], 5 trits each -> elements 160+j+16*l (j<16, l<5) = elements 160..239
+    #   group C: qh[0..3],   4 trits each -> elements 240+j+4*l  (j<4,  l<4) = elements 240..255
+    #   v = sum_l u_l * 3^(len-1-l), u_l = trit_l + 1 in {0,1,2}; q = ceil(v * 256 / 3^len)
+    rows, n = wq.shape
+    assert n % 256 == 0, f"in_dim={n} must be a multiple of 256 for TQ1_0 packing"
+    nb = n // 256
+    w = wq.reshape(rows, nb, 256).astype(np.int64) + 1  # trit -> u in {0,1,2}
+
+    pow_a = np.array([81, 27, 9, 3, 1], dtype=np.int64).reshape(1, 1, 5, 1)
+    pow_c = np.array([27, 9, 3, 1], dtype=np.int64).reshape(1, 1, 4, 1)
+
+    v_a = (w[:, :, :160].reshape(rows, nb, 5, 32) * pow_a).sum(axis=2)
+    v_b = (w[:, :, 160:240].reshape(rows, nb, 5, 16) * pow_a).sum(axis=2)
+    v_c = (w[:, :, 240:256].reshape(rows, nb, 4, 4) * pow_c).sum(axis=2)
+
+    qs_a = ((v_a * 256 + 242) // 243).astype(np.uint8)
+    qs_b = ((v_b * 256 + 242) // 243).astype(np.uint8)
+    qh   = ((v_c * 256 + 80) // 81).astype(np.uint8)
+
+    packed = np.concatenate([qs_a, qs_b, qh], axis=2)  # [rows, nb, 52]
+    return packed.reshape(rows, nb * 52).view(np.int8)
 
 
 @ModelBase.register("HGRNBitForCausalLM")
@@ -53,10 +82,16 @@ class HgrnBitModel(TextModel):
 
     def _add_bitlinear(self, base: str, weight: Tensor):
         # ref: matmulfreellmCPU/tools/reference.py weight_quant_int
-        w = weight.float()
+        # Force real materialization before _pack_tq1: it uses plain numpy free functions
+        # (np.concatenate) that gguf-py's LazyNumpyTensor doesn't intercept (no
+        # __array_function__ yet - see gguf-py/gguf/lazy.py), so calling them on a
+        # still-lazy tensor silently packs the zero-filled meta placeholder instead of
+        # real weights.
+        w = LazyTorchTensor.to_eager(weight).float()
         scale_w = w.abs().mean().clamp(min=1e-5).reciprocal()
         wq = (w * scale_w).round().clamp(-1, 1).numpy().astype(np.int8)
-        self.gguf_writer.add_tensor(f"{base}.weight", wq, raw_dtype=gguf.GGMLQuantizationType.I8)
+        packed = _pack_tq1(wq)
+        self.gguf_writer.add_tensor(f"{base}.weight", packed, raw_dtype=gguf.GGMLQuantizationType.I8)
         self.gguf_writer.add_tensor(f"{base}.scale", scale_w.reshape(1).numpy().astype(np.float32))
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:

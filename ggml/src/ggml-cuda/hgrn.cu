@@ -1,12 +1,43 @@
 #include "common.cuh"
 #include "hgrn.cuh"
 
+// wq rows are packed 5-trits/byte, matching ggml-quants' TQ1_0 block layout minus its
+// per-block fp16 scale (HGRN-Bit already has one scale per whole projection): 256 ternary
+// weights -> 52 bytes (48 qs + 4 qh). Ported from matmulfreellmCPU/cpp/include/mmfree/tq1.hpp
+// (trit_at / unpack_row); see ggml_compute_forward_hgrn_ternary_mm (ggml-cpu/ops.cpp) for the
+// identical CPU-side decode this mirrors.
+__device__ __forceinline__ int8_t hgrn_tq1_trit(uint8_t q, int l) {
+    const uint8_t pow3[5] = { 1, 3, 9, 27, 81 };
+    const uint8_t ql = (uint8_t) (q * pow3[l]);
+    return (int8_t) ((ql >= 86) + (ql >= 171) - 1);
+}
+
+__device__ __forceinline__ void hgrn_tq1_unpack_block(int8_t * dst, const uint8_t * blk) {
+    const uint8_t * qs = blk;
+    const uint8_t * qh = blk + 48;
+    for (int l = 0; l < 5; l++) {
+        for (int j = 0; j < 32; j++) {
+            dst[j + 32 * l] = hgrn_tq1_trit(qs[j], l);
+        }
+    }
+    for (int l = 0; l < 5; l++) {
+        for (int j = 0; j < 16; j++) {
+            dst[160 + j + 16 * l] = hgrn_tq1_trit(qs[32 + j], l);
+        }
+    }
+    for (int l = 0; l < 4; l++) {
+        for (int j = 0; j < 4; j++) {
+            dst[240 + j + 4 * l] = hgrn_tq1_trit(qh[j], l);
+        }
+    }
+}
+
 // HGRN-Bit (MatMul-Free LM) ternary BitLinear: y = (x_norm @ wq) / scale_w, wq in {-1,0,+1}
 // one thread per (o, t) output element, full serial dot product over in_dim (correctness-first,
 // same math as the CPU/Metal ports - see src/models/hgrnbit.cpp)
 static __global__ void hgrn_ternary_mm_f32(
-        const float * x, const int8_t * wq, const float * scale, float * dst,
-        const int64_t in_dim, const int64_t out_dim, const int64_t n_tok) {
+        const float * x, const uint8_t * wq, const float * scale, float * dst,
+        const int64_t in_dim, const int64_t out_dim, const int64_t n_tok, const int64_t row_bytes) {
     const int64_t gid = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (gid >= out_dim * n_tok) {
         return;
@@ -14,13 +45,19 @@ static __global__ void hgrn_ternary_mm_f32(
 
     const int64_t o = gid % out_dim;
     const int64_t t = gid / out_dim;
+    const int64_t n_blocks = in_dim / 256;
 
-    const float  * xrow = x  + t * in_dim;
-    const int8_t * wrow = wq + o * in_dim;
+    const float   * xrow    = x  + t * in_dim;
+    const uint8_t * wpacked = wq + o * row_bytes;
 
     float acc = 0.0f;
-    for (int64_t k = 0; k < in_dim; k++) {
-        acc += xrow[k] * (float) wrow[k];
+    int8_t wblk[256];
+    for (int64_t b = 0; b < n_blocks; b++) {
+        hgrn_tq1_unpack_block(wblk, wpacked + b * 52);
+        const float * xblk = xrow + b * 256;
+        for (int64_t k = 0; k < 256; k++) {
+            acc += xblk[k] * (float) wblk[k];
+        }
     }
 
     dst[t * out_dim + o] = acc / scale[0];
@@ -64,14 +101,15 @@ void ggml_cuda_op_hgrn_ternary_mm(ggml_backend_cuda_context & ctx, ggml_tensor *
     GGML_ASSERT(wq->type == GGML_TYPE_I8);
     GGML_ASSERT(sc->type == GGML_TYPE_F32);
 
-    const int64_t in_dim  = x->ne[0];
-    const int64_t out_dim = wq->ne[1];
-    const int64_t n_tok   = x->ne[1] * x->ne[2] * x->ne[3];
+    const int64_t in_dim    = x->ne[0];
+    const int64_t out_dim   = wq->ne[1];
+    const int64_t n_tok     = x->ne[1] * x->ne[2] * x->ne[3];
+    const int64_t row_bytes = wq->ne[0];  // TQ1_0-style packed row: in_dim/256*52
 
-    const float  * x_d  = (const float  *) x->data;
-    const int8_t * wq_d = (const int8_t *) wq->data;
-    const float  * sc_d = (const float  *) sc->data;
-    float        * dst_d = (float *) dst->data;
+    const float   * x_d  = (const float   *) x->data;
+    const uint8_t * wq_d = (const uint8_t *) wq->data;
+    const float   * sc_d = (const float   *) sc->data;
+    float         * dst_d = (float *) dst->data;
 
     cudaStream_t stream = ctx.stream();
 
@@ -79,7 +117,7 @@ void ggml_cuda_op_hgrn_ternary_mm(ggml_backend_cuda_context & ctx, ggml_tensor *
     const int block_size = 256;
     const int64_t n_blocks = (n_threads_total + block_size - 1) / block_size;
 
-    hgrn_ternary_mm_f32<<<n_blocks, block_size, 0, stream>>>(x_d, wq_d, sc_d, dst_d, in_dim, out_dim, n_tok);
+    hgrn_ternary_mm_f32<<<n_blocks, block_size, 0, stream>>>(x_d, wq_d, sc_d, dst_d, in_dim, out_dim, n_tok, row_bytes);
 }
 
 void ggml_cuda_op_hgrn_scan(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {

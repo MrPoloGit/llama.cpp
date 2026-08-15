@@ -5909,7 +5909,9 @@ struct ggml_tensor * ggml_hgrn_ternary_mm(
     GGML_ASSERT(wq->type == GGML_TYPE_I8);
     GGML_ASSERT(scale_w->type == GGML_TYPE_F32);
     GGML_ASSERT(ggml_nelements(scale_w) == 1);
-    GGML_ASSERT(x_norm->ne[0] == wq->ne[0]);
+    // wq rows are TQ1_0-style packed: 256 ternary weights -> 52 bytes (see ops.cpp).
+    GGML_ASSERT(x_norm->ne[0] % 256 == 0);
+    GGML_ASSERT(wq->ne[0] == (x_norm->ne[0] / 256) * 52);
 
     const int64_t ne[4] = { wq->ne[1], x_norm->ne[1], x_norm->ne[2], x_norm->ne[3] };
     struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);

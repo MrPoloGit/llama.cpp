@@ -3,14 +3,24 @@
 #include "llama-memory-recurrent.h"
 
 // HGRN-Bit (MatMul-Free LM) ternary BitLinear + gated recurrence are ggml_hgrn_ternary_mm /
-// ggml_hgrn_scan (ggml.h), first-class ops with CPU (ggml-cpu/ops.cpp) and Metal
-// (ggml-metal.metal) implementations, ported from matmulfreellmCPU/cpp/src/kernels/
-// {bitlinear,hgrn_scan}.cpp (ActQuant::Float mode: no activation quantization, matches the
-// published HF model).
+// ggml_hgrn_scan (ggml.h), first-class ops with CPU (ggml-cpu/ops.cpp), Metal
+// (ggml-metal.metal), and CUDA (ggml-cuda/hgrn.cu) implementations, ported from
+// matmulfreellmCPU/cpp/src/kernels/{bitlinear,hgrn_scan}.cpp (ActQuant::Float mode: no
+// activation quantization, matches the published HF model). BitLinear weight rows are
+// TQ1_0-style packed (5 trits/byte, see ggml_hgrn_ternary_mm), ported from
+// matmulfreellmCPU/cpp/include/mmfree/tq1.hpp.
 
 void llama_model_hgrnbit::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
     ml.get_key(LLM_KV_HGRNBIT_HEAD_DIM,             hparams.hgrnbit_head_dim);
+}
+
+// BitLinear weight rows are packed TQ1_0-style (see ggml_hgrn_ternary_mm): 256 ternary
+// weights -> 52 bytes. in_dim must be a multiple of 256 (true for every dim in the published
+// HGRN-Bit checkpoints - hidden_size and the 256-rounded intermediate_size both qualify).
+static int64_t hgrn_tq1_row_bytes(int64_t in_dim) {
+    GGML_ASSERT(in_dim % 256 == 0);
+    return (in_dim / 256) * 52;
 }
 
 void llama_model_hgrnbit::load_arch_tensors(llama_model_loader &) {
@@ -22,7 +32,7 @@ void llama_model_hgrnbit::load_arch_tensors(llama_model_loader &) {
 
     output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
 
-    output          = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), {n_embd, n_vocab}, 0);
+    output          = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), {hgrn_tq1_row_bytes(n_embd), n_vocab}, 0);
     output_bitnorm  = create_tensor(tn(LLM_TENSOR_OUTPUT, "norm"),   {n_embd}, 0);
     output_bitscale = create_tensor(tn(LLM_TENSOR_OUTPUT, "scale"),  {1}, 0);
 
@@ -35,27 +45,27 @@ void llama_model_hgrnbit::load_arch_tensors(llama_model_loader &) {
         layer.ffn_norm    = create_tensor(tn(LLM_TENSOR_FFN_NORM,  "weight", i), {n_embd}, 0);
         layer.hgrn_g_norm = create_tensor(tn(LLM_TENSOR_HGRN_GNORM, "weight", i), {input_dim}, 0);
 
-        layer.hgrn_iproj       = create_tensor(tn(LLM_TENSOR_HGRN_IPROJ, "weight", i), {n_embd, input_dim}, 0);
+        layer.hgrn_iproj       = create_tensor(tn(LLM_TENSOR_HGRN_IPROJ, "weight", i), {hgrn_tq1_row_bytes(n_embd), input_dim}, 0);
         layer.hgrn_iproj_norm  = create_tensor(tn(LLM_TENSOR_HGRN_IPROJ, "norm",   i), {n_embd}, 0);
         layer.hgrn_iproj_scale = create_tensor(tn(LLM_TENSOR_HGRN_IPROJ, "scale",  i), {1}, 0);
 
-        layer.hgrn_fproj       = create_tensor(tn(LLM_TENSOR_HGRN_FPROJ, "weight", i), {n_embd, input_dim}, 0);
+        layer.hgrn_fproj       = create_tensor(tn(LLM_TENSOR_HGRN_FPROJ, "weight", i), {hgrn_tq1_row_bytes(n_embd), input_dim}, 0);
         layer.hgrn_fproj_norm  = create_tensor(tn(LLM_TENSOR_HGRN_FPROJ, "norm",   i), {n_embd}, 0);
         layer.hgrn_fproj_scale = create_tensor(tn(LLM_TENSOR_HGRN_FPROJ, "scale",  i), {1}, 0);
 
-        layer.hgrn_gproj       = create_tensor(tn(LLM_TENSOR_HGRN_GPROJ, "weight", i), {n_embd, input_dim}, 0);
+        layer.hgrn_gproj       = create_tensor(tn(LLM_TENSOR_HGRN_GPROJ, "weight", i), {hgrn_tq1_row_bytes(n_embd), input_dim}, 0);
         layer.hgrn_gproj_norm  = create_tensor(tn(LLM_TENSOR_HGRN_GPROJ, "norm",   i), {n_embd}, 0);
         layer.hgrn_gproj_scale = create_tensor(tn(LLM_TENSOR_HGRN_GPROJ, "scale",  i), {1}, 0);
 
-        layer.hgrn_oproj       = create_tensor(tn(LLM_TENSOR_HGRN_OPROJ, "weight", i), {input_dim, n_embd}, 0);
+        layer.hgrn_oproj       = create_tensor(tn(LLM_TENSOR_HGRN_OPROJ, "weight", i), {hgrn_tq1_row_bytes(input_dim), n_embd}, 0);
         layer.hgrn_oproj_norm  = create_tensor(tn(LLM_TENSOR_HGRN_OPROJ, "norm",   i), {input_dim}, 0);
         layer.hgrn_oproj_scale = create_tensor(tn(LLM_TENSOR_HGRN_OPROJ, "scale",  i), {1}, 0);
 
-        layer.hgrn_gateproj       = create_tensor(tn(LLM_TENSOR_HGRN_GATEPROJ, "weight", i), {n_embd, 2 * n_ff}, 0);
+        layer.hgrn_gateproj       = create_tensor(tn(LLM_TENSOR_HGRN_GATEPROJ, "weight", i), {hgrn_tq1_row_bytes(n_embd), 2 * n_ff}, 0);
         layer.hgrn_gateproj_norm  = create_tensor(tn(LLM_TENSOR_HGRN_GATEPROJ, "norm",   i), {n_embd}, 0);
         layer.hgrn_gateproj_scale = create_tensor(tn(LLM_TENSOR_HGRN_GATEPROJ, "scale",  i), {1}, 0);
 
-        layer.hgrn_downproj       = create_tensor(tn(LLM_TENSOR_HGRN_DOWNPROJ, "weight", i), {n_ff, n_embd}, 0);
+        layer.hgrn_downproj       = create_tensor(tn(LLM_TENSOR_HGRN_DOWNPROJ, "weight", i), {hgrn_tq1_row_bytes(n_ff), n_embd}, 0);
         layer.hgrn_downproj_norm  = create_tensor(tn(LLM_TENSOR_HGRN_DOWNPROJ, "norm",   i), {n_ff}, 0);
         layer.hgrn_downproj_scale = create_tensor(tn(LLM_TENSOR_HGRN_DOWNPROJ, "scale",  i), {1}, 0);
     }
