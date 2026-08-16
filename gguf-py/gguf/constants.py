@@ -597,8 +597,8 @@ class MODEL_ARCH(IntEnum):
     MELLUM           = auto()
     NANBEIGE         = auto()
     QWEN3TTS         = auto()
-    HGRNBIT          = auto()
     POCKETTTS        = auto()
+    HGRNBIT          = auto()
 
 
 class VISION_PROJECTOR_TYPE(IntEnum):
@@ -1314,8 +1314,8 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.MELLUM:           "mellum",
     MODEL_ARCH.NANBEIGE:         "nanbeige",
     MODEL_ARCH.QWEN3TTS:         "qwen3tts",
-    MODEL_ARCH.HGRNBIT:          "hgrnbit",
     MODEL_ARCH.POCKETTTS:        "pockettts",
+    MODEL_ARCH.HGRNBIT:          "hgrnbit",
 }
 
 VISION_PROJECTOR_TYPE_NAMES: dict[VISION_PROJECTOR_TYPE, str] = {

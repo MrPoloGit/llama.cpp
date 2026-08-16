@@ -633,7 +633,6 @@ struct llama_model {
     // hgrnbit: precomputed per-layer forget-gate lower bound, [n_embd, n_layer]
     struct ggml_tensor * hgrn_lower_bounds = nullptr;
 
-
     // NVFP4 per-tensor scale2, input_scale for LM head
     struct ggml_tensor * output_s    = nullptr;
     struct ggml_tensor * output_in_s = nullptr;
