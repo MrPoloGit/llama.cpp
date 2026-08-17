@@ -2728,6 +2728,12 @@ inline void hgrn_tq1_unpack_block(thread char * dst, device const uchar * blk) {
     }
 }
 
+// One threadgroup (= one simdgroup, 32 threads) per (o, t) output element: each thread
+// strides over a subset of the 256-element blocks (independent accumulators, breaking the
+// long serial FMA chain a single-thread reduction would have - see matmulfreellmCPU's
+// simd.hpp comment on exactly this problem for the same-shape workload), then simd_sum
+// combines the 32 partials. 32 lanes covers every projection's block count in every
+// published checkpoint (max 27, at 2.7B's down_proj) with no idle-thread waste beyond that.
 kernel void kernel_hgrn_ternary_mm_f32(
         device const float   * x,
         device const uchar   * wq,
@@ -2737,7 +2743,8 @@ kernel void kernel_hgrn_ternary_mm_f32(
         constant     int64_t & out_dim,
         constant     int64_t & n_tok,
         constant     int64_t & row_bytes,
-        uint3 tgpig[[threadgroup_position_in_grid]]) {
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]]) {
     const int64_t gid = tgpig.x;
     if (gid >= out_dim * n_tok) {
         return;
@@ -2752,7 +2759,7 @@ kernel void kernel_hgrn_ternary_mm_f32(
 
     float acc = 0.0f;
     char wblk[256];
-    for (int64_t b = 0; b < n_blocks; b++) {
+    for (int64_t b = tiisg; b < n_blocks; b += 32) {
         hgrn_tq1_unpack_block(wblk, wpacked + b * 52);
         device const float * xblk = xrow + b * 256;
         for (int64_t k = 0; k < 256; k++) {
@@ -2760,7 +2767,11 @@ kernel void kernel_hgrn_ternary_mm_f32(
         }
     }
 
-    dst[t * out_dim + o] = acc / scale[0];
+    acc = simd_sum(acc);
+
+    if (tiisg == 0) {
+        dst[t * out_dim + o] = acc / scale[0];
+    }
 }
 
 // HGRN-Bit gated linear recurrence: h_t = f_t*h_{t-1} + i_t, y_t = h_t

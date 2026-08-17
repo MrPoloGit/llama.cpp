@@ -1848,7 +1848,10 @@ int ggml_metal_op_hgrn_ternary_mm(ggml_metal_op_t ctx, int idx) {
     ggml_metal_encoder_set_bytes   (enc, (void *) &n_tok,     sizeof(n_tok),     ida++);
     ggml_metal_encoder_set_bytes   (enc, (void *) &row_bytes, sizeof(row_bytes), ida++);
 
-    ggml_metal_encoder_dispatch_threadgroups(enc, out_dim * n_tok, 1, 1, 1, 1, 1);
+    // 32 threads (one simdgroup) per output element, cooperatively reducing the dot
+    // product instead of one thread doing the whole thing serially - see the kernel
+    // comment in ggml-metal.metal for why.
+    ggml_metal_encoder_dispatch_threadgroups(enc, out_dim * n_tok, 1, 1, 32, 1, 1);
 
     return 1;
 }

@@ -10504,6 +10504,61 @@ static inline void ggml_hgrn_tq1_unpack_block(int8_t * dst, const uint8_t * blk)
     }
 }
 
+#if defined(__ARM_NEON) && defined(__aarch64__)
+// NEON dot product for one BitLinear row, ported from matmulfreellmCPU/cpp/include/mmfree/
+// tq1.hpp (trits16 / mac16_f32 / dot_f32) - same block layout as ggml_hgrn_tq1_unpack_block
+// above, just decoding straight into the reduction instead of a scalar temp array first.
+// Four independent accumulators (not one), same reason matmulfreellmCPU's own comment gives:
+// a single accumulator makes every add depend on the previous one, an unhideable serial
+// chain at N~1024+ that out-of-order execution can't cover. Reduction order differs from
+// the scalar path above (matches the fp-reduction-noise contract every other ternary_dot_f32
+// path in this codebase already has), not a correctness difference.
+static inline int8x16_t ggml_hgrn_tq1_trits16(uint8x16_t q, uint8_t p3) {
+    const uint8x16_t a   = vmulq_u8(q, vdupq_n_u8(p3));
+    const uint8x16_t pos = vcgeq_u8(a, vdupq_n_u8(171));
+    const uint8x16_t neg = vcltq_u8(a, vdupq_n_u8(86));
+    return vsubq_s8(vreinterpretq_s8_u8(vshrq_n_u8(pos, 7)),
+                     vreinterpretq_s8_u8(vshrq_n_u8(neg, 7)));
+}
+
+static inline void ggml_hgrn_tq1_mac16_f32(
+        float32x4_t & a0, float32x4_t & a1, float32x4_t & a2, float32x4_t & a3,
+        const float * x, int8x16_t t) {
+    const int16x8_t lo = vmovl_s8(vget_low_s8(t)), hi = vmovl_s8(vget_high_s8(t));
+    a0 = vmlaq_f32(a0, vld1q_f32(x + 0),  vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo))));
+    a1 = vmlaq_f32(a1, vld1q_f32(x + 4),  vcvtq_f32_s32(vmovl_s16(vget_high_s16(lo))));
+    a2 = vmlaq_f32(a2, vld1q_f32(x + 8),  vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi))));
+    a3 = vmlaq_f32(a3, vld1q_f32(x + 12), vcvtq_f32_s32(vmovl_s16(vget_high_s16(hi))));
+}
+
+static float ggml_hgrn_tq1_dot_f32_neon(const float * x, const uint8_t * wpacked, int64_t n_blocks) {
+    static const uint8_t pow3[5] = { 1, 3, 9, 27, 81 };
+    float32x4_t a0 = vdupq_n_f32(0.0f), a1 = vdupq_n_f32(0.0f);
+    float32x4_t a2 = vdupq_n_f32(0.0f), a3 = vdupq_n_f32(0.0f);
+    for (int64_t b = 0; b < n_blocks; ++b) {
+        const uint8_t * qs = wpacked + b * 52;
+        const uint8_t * qh = qs + 48;
+        const float   * xb = x + b * 256;
+        const uint8x16_t qa0 = vld1q_u8(qs), qa1 = vld1q_u8(qs + 16), qb = vld1q_u8(qs + 32);
+        for (int l = 0; l < 5; ++l) {
+            const uint8_t p = pow3[l];
+            ggml_hgrn_tq1_mac16_f32(a0, a1, a2, a3, xb + 32 * l,       ggml_hgrn_tq1_trits16(qa0, p));
+            ggml_hgrn_tq1_mac16_f32(a0, a1, a2, a3, xb + 32 * l + 16,  ggml_hgrn_tq1_trits16(qa1, p));
+            ggml_hgrn_tq1_mac16_f32(a0, a1, a2, a3, xb + 160 + 16 * l, ggml_hgrn_tq1_trits16(qb, p));
+        }
+        // group C is 4 bytes x 4 trits = 16 elements; too narrow to vectorize usefully.
+        float t = 0.0f;
+        for (int l = 0; l < 4; ++l) {
+            for (int j = 0; j < 4; ++j) {
+                t += (float) ggml_hgrn_tq1_trit(qh[j], l) * xb[240 + j + 4 * l];
+            }
+        }
+        a0 = vsetq_lane_f32(vgetq_lane_f32(a0, 0) + t, a0, 0);
+    }
+    return vaddvq_f32(vaddq_f32(vaddq_f32(a0, a1), vaddq_f32(a2, a3)));
+}
+#endif // __ARM_NEON && __aarch64__
+
 void ggml_compute_forward_hgrn_ternary_mm(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
@@ -10526,12 +10581,17 @@ void ggml_compute_forward_hgrn_ternary_mm(
     const int ith = params->ith;
     const int nth = params->nth;
 
+#if !(defined(__ARM_NEON) && defined(__aarch64__))
     int8_t wrow[256];
+#endif
 
     for (int64_t o = ith; o < out_dim; o += nth) {
         const uint8_t * wpacked = wd + o * row_bytes;
         for (int64_t t = 0; t < n_tok; ++t) {
             const float * xrow = xd + t * in_dim;
+#if defined(__ARM_NEON) && defined(__aarch64__)
+            float acc = ggml_hgrn_tq1_dot_f32_neon(xrow, wpacked, n_blocks);
+#else
             float acc = 0.0f;
             for (int64_t b = 0; b < n_blocks; ++b) {
                 ggml_hgrn_tq1_unpack_block(wrow, wpacked + b * 52);
@@ -10540,6 +10600,7 @@ void ggml_compute_forward_hgrn_ternary_mm(
                     acc += xblk[k] * (float) wrow[k];
                 }
             }
+#endif
             yd[t * out_dim + o] = acc / scale_w;
         }
     }

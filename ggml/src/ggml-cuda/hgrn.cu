@@ -33,12 +33,22 @@ __device__ __forceinline__ void hgrn_tq1_unpack_block(int8_t * dst, const uint8_
 }
 
 // HGRN-Bit (MatMul-Free LM) ternary BitLinear: y = (x_norm @ wq) / scale_w, wq in {-1,0,+1}
-// one thread per (o, t) output element, full serial dot product over in_dim (correctness-first,
-// same math as the CPU/Metal ports - see src/models/hgrnbit.cpp)
+// (same math as the CPU/Metal ports - see src/models/hgrnbit.cpp)
+// One warp (32 threads) per (o, t) output element: each lane strides over a subset of the
+// 256-element blocks with its own independent accumulator (breaking the long serial FMA
+// chain a single-thread reduction would have - see matmulfreellmCPU's simd.hpp comment on
+// exactly this problem for the same-shape workload), then warp_reduce_sum (common.cuh)
+// combines the 32 partials. Mirrors the simdgroup/simd_sum fix already applied to the Metal
+// kernel (see ggml-metal.metal) - same root cause, same fix, CUDA's warp-shuffle idiom
+// instead of Metal's simd_sum. 32 lanes covers every projection's block count in every
+// published checkpoint (max 27, at 2.7B's down_proj) with only marginal idle-lane waste
+// beyond that. warp_reduce_sum (not a hand-rolled __shfl_down_sync loop) so this stays
+// correct on the HIP/ROCm and MUSA builds that also compile this file.
 static __global__ void hgrn_ternary_mm_f32(
         const float * x, const uint8_t * wq, const float * scale, float * dst,
         const int64_t in_dim, const int64_t out_dim, const int64_t n_tok, const int64_t row_bytes) {
-    const int64_t gid = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    const int64_t gid  = ((int64_t) blockIdx.x * blockDim.x + threadIdx.x) / 32;
+    const int     lane = threadIdx.x % 32;
     if (gid >= out_dim * n_tok) {
         return;
     }
@@ -52,7 +62,7 @@ static __global__ void hgrn_ternary_mm_f32(
 
     float acc = 0.0f;
     int8_t wblk[256];
-    for (int64_t b = 0; b < n_blocks; b++) {
+    for (int64_t b = lane; b < n_blocks; b += 32) {
         hgrn_tq1_unpack_block(wblk, wpacked + b * 52);
         const float * xblk = xrow + b * 256;
         for (int64_t k = 0; k < 256; k++) {
@@ -60,7 +70,11 @@ static __global__ void hgrn_ternary_mm_f32(
         }
     }
 
-    dst[t * out_dim + o] = acc / scale[0];
+    acc = warp_reduce_sum(acc);
+
+    if (lane == 0) {
+        dst[t * out_dim + o] = acc / scale[0];
+    }
 }
 
 // HGRN-Bit gated linear recurrence: h_t = f_t*h_{t-1} + i_t, y_t = h_t
@@ -113,8 +127,9 @@ void ggml_cuda_op_hgrn_ternary_mm(ggml_backend_cuda_context & ctx, ggml_tensor *
 
     cudaStream_t stream = ctx.stream();
 
-    const int64_t n_threads_total = out_dim * n_tok;
-    const int block_size = 256;
+    // one warp (32 threads) per output element - see the kernel comment for why
+    const int64_t n_threads_total = out_dim * n_tok * 32;
+    const int block_size = 128; // 4 warps/block, must stay a multiple of 32
     const int64_t n_blocks = (n_threads_total + block_size - 1) / block_size;
 
     hgrn_ternary_mm_f32<<<n_blocks, block_size, 0, stream>>>(x_d, wq_d, sc_d, dst_d, in_dim, out_dim, n_tok, row_bytes);
