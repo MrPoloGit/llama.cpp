@@ -2542,17 +2542,30 @@ extern "C" {
             struct ggml_tensor  * b,
             struct ggml_tensor  * state);
 
+    // HGRN-Bit BitLinear activation numerics - mirrors matmulfreellmCPU's ActQuant enum
+    // (mmfree/kernels.hpp): Float keeps x_norm fp32 (the published-checkpoint "triton"
+    // golden, no activation rounding); FixedQ510 quantizes x_norm to static signed
+    // Q(15-f).f fixed point (saturating int16), accumulates in int32, dequants by
+    // acc / (2^f * scale_w) - see ggml_compute_forward_hgrn_ternary_mm (ggml-cpu/ops.cpp).
+    enum ggml_hgrn_act_quant {
+        GGML_HGRN_ACT_QUANT_FLOAT     = 0,
+        GGML_HGRN_ACT_QUANT_FIXEDQ510 = 1,
+    };
+
     // HGRN-Bit (MatMul-Free LM) ternary BitLinear: y = (x_norm @ wq) / scale_w, wq in {-1,0,+1}
     // x_norm: [in, T, ...] f32 (in a multiple of 256), scale_w: [1] f32 -> [out, T, ...] f32
     // wq: [in/256*52, out] i8, TQ1_0-style packed ternary weights (ggml-quants' TQ1_0 block
     // layout minus its per-block scale: 256 ternary weights -> 52 bytes/block, 5 trits/byte
     // via base-3 packing). See ggml_compute_forward_hgrn_ternary_mm (ggml-cpu/ops.cpp) for
-    // the unpack.
+    // the unpack. act_quant/frac_bits select the activation numerics above (frac_bits is
+    // ignored when act_quant is GGML_HGRN_ACT_QUANT_FLOAT).
     GGML_API struct ggml_tensor * ggml_hgrn_ternary_mm(
             struct ggml_context * ctx,
             struct ggml_tensor  * x_norm,
             struct ggml_tensor  * wq,
-            struct ggml_tensor  * scale_w);
+            struct ggml_tensor  * scale_w,
+            enum ggml_hgrn_act_quant act_quant,
+            int                      frac_bits);
 
     // HGRN-Bit gated linear recurrence: h_t = f_t*h_{t-1} + i_t, y_t = h_t
     // i, f: [D, H, T, S] f32, state: [D, H, S] f32 -> flat f32 [D*H*T*S + D*H*S] (y ; new state)

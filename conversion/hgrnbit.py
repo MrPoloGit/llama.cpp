@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 from typing import Iterable, TYPE_CHECKING
@@ -79,6 +81,23 @@ class HgrnBitModel(TextModel):
         self.gguf_writer.add_hgrnbit_head_dim(input_dim // num_heads)
         self.gguf_writer.add_layer_norm_rms_eps(self.hparams.get("rms_norm_eps", 1e-6))
         self.gguf_writer.add_file_type(self.ftype)
+
+        # Activation quant for the BitLinear projections - mirrors matmulfreellmCPU's
+        # ActQuant enum (mmfree/kernels.hpp). Defaults to float (the published-checkpoint
+        # "triton" golden, matching this converter's historical behavior) unless overridden;
+        # opt into FixedQ510 (matmulfreellmCPU's own default, its FPGA-datapath numerics) via
+        # env vars, e.g. `HGRNBIT_ACT_QUANT=fixedq510 python3 convert_hf_to_gguf.py ...`.
+        # No CLI flag: this is a niche, single-architecture option, not worth adding to the
+        # shared convert_hf_to_gguf.py argparse surface every architecture goes through.
+        act_quant = os.environ.get("HGRNBIT_ACT_QUANT", "float").strip().lower()
+        if act_quant not in ("float", "fixedq510"):
+            raise ValueError(f"HGRNBIT_ACT_QUANT must be 'float' or 'fixedq510', got {act_quant!r}")
+        if act_quant == "fixedq510":
+            frac_bits = int(os.environ.get("HGRNBIT_FRAC_BITS", "10"))
+            self.gguf_writer.add_hgrnbit_act_quant_mode(1)  # GGML_HGRN_ACT_QUANT_FIXEDQ510
+            self.gguf_writer.add_hgrnbit_frac_bits(frac_bits)
+        # act_quant == "float": write nothing: the loader defaults (Float, frac_bits=10)
+        # match this converter's prior, still-unconditional behavior for every existing GGUF.
 
     def _add_bitlinear(self, base: str, weight: Tensor):
         # ref: matmulfreellmCPU/tools/reference.py weight_quant_int

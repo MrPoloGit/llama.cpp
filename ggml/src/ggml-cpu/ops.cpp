@@ -10581,6 +10581,55 @@ void ggml_compute_forward_hgrn_ternary_mm(
     const int ith = params->ith;
     const int nth = params->nth;
 
+    const int32_t act_quant = ggml_get_op_params_i32(dst, 0);
+    const int32_t frac_bits = ggml_get_op_params_i32(dst, 1);
+
+    if (act_quant == GGML_HGRN_ACT_QUANT_FIXEDQ510) {
+        // FixedQ510: static signed Q(15-f).f fixed-point activations (default Q5.10),
+        // saturating to int16, then INTEGER (int32) accumulation over ternary lanes -
+        // associative, so bit-exact regardless of reduction order, unlike the fp32
+        // Float path below. Dequant by acc / (2^frac_bits * scale_w). Ported from
+        // matmulfreellmCPU/cpp/src/kernels/bitlinear.cpp (ActQuant::FixedQ510) and
+        // mmfree/simd.hpp (quant_q510 / ternary_dot_i32 / dequant_scale).
+        //
+        // Quantized one 256-element block at a time (not a whole in_dim-sized buffer
+        // materialized up front) to match this function's existing scratch-buffer
+        // granularity below; quantization is purely elementwise so this is bit-identical
+        // to quantizing the whole row at once. Correctness-first, one thread per output
+        // element, same as the Float path - not yet NEON-accelerated.
+        const float qs        = (float) (1 << frac_bits);
+        const float inv_fixed = 1.0f / (qs * scale_w);
+
+        int8_t  wrow[256];
+        int32_t yqblk[256];
+
+        for (int64_t o = ith; o < out_dim; o += nth) {
+            const uint8_t * wpacked = wd + o * row_bytes;
+            for (int64_t t = 0; t < n_tok; ++t) {
+                const float * xrow = xd + t * in_dim;
+                int32_t acc = 0;
+                for (int64_t b = 0; b < n_blocks; ++b) {
+                    ggml_hgrn_tq1_unpack_block(wrow, wpacked + b * 52);
+                    const float * xblk = xrow + b * 256;
+                    for (int64_t k = 0; k < 256; ++k) {
+                        float q = nearbyintf(xblk[k] * qs);
+                        if (q > 32767.0f) q = 32767.0f;
+                        else if (q < -32768.0f) q = -32768.0f;
+                        yqblk[k] = (int32_t) q;
+                    }
+                    for (int64_t k = 0; k < 256; ++k) {
+                        const int8_t wk = wrow[k];
+                        if (wk > 0) acc += yqblk[k];
+                        else if (wk < 0) acc -= yqblk[k];
+                    }
+                }
+                yd[t * out_dim + o] = (float) acc * inv_fixed;
+            }
+        }
+        return;
+    }
+
+    // Float (triton golden): activations kept fp32, no rounding - see file header.
 #if !(defined(__ARM_NEON) && defined(__aarch64__))
     int8_t wrow[256];
 #endif

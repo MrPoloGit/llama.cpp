@@ -1826,6 +1826,9 @@ int ggml_metal_op_rwkv(ggml_metal_op_t ctx, int idx) {
 int ggml_metal_op_hgrn_ternary_mm(ggml_metal_op_t ctx, int idx) {
     ggml_tensor * op = ctx->node(idx);
 
+    const int32_t act_quant = ggml_get_op_params_i32(op, 0);
+    const int32_t frac_bits = ggml_get_op_params_i32(op, 1);
+
     ggml_metal_library_t lib = ctx->lib;
     ggml_metal_encoder_t enc = ctx->enc;
 
@@ -1847,6 +1850,8 @@ int ggml_metal_op_hgrn_ternary_mm(ggml_metal_op_t ctx, int idx) {
     ggml_metal_encoder_set_bytes   (enc, (void *) &out_dim,   sizeof(out_dim),   ida++);
     ggml_metal_encoder_set_bytes   (enc, (void *) &n_tok,     sizeof(n_tok),     ida++);
     ggml_metal_encoder_set_bytes   (enc, (void *) &row_bytes, sizeof(row_bytes), ida++);
+    ggml_metal_encoder_set_bytes   (enc, (void *) &act_quant, sizeof(act_quant), ida++);
+    ggml_metal_encoder_set_bytes   (enc, (void *) &frac_bits, sizeof(frac_bits), ida++);
 
     // 32 threads (one simdgroup) per output element, cooperatively reducing the dot
     // product instead of one thread doing the whole thing serially - see the kernel

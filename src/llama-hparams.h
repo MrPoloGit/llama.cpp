@@ -173,6 +173,11 @@ struct llama_hparams {
 
     // for HGRN-Bit (MatMul-Free LM)
     uint32_t hgrnbit_head_dim = 0;
+    // BitLinear activation quant: 0 = Float (default, matches published checkpoints),
+    // 1 = FixedQ510 (see ggml_hgrn_act_quant in ggml.h). frac_bits is FixedQ510's fixed-point
+    // fractional width (10 -> Q5.10, matmulfreellmCPU's default); ignored when mode is Float.
+    uint32_t hgrnbit_act_quant_mode = 0;
+    uint32_t hgrnbit_frac_bits      = 10;
 
     // kimi-k3
     uint32_t n_expert_latent      = 0;      // routed_expert_hidden_size (0 = experts run at n_embd)

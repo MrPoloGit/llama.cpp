@@ -2734,6 +2734,15 @@ inline void hgrn_tq1_unpack_block(thread char * dst, device const uchar * blk) {
 // simd.hpp comment on exactly this problem for the same-shape workload), then simd_sum
 // combines the 32 partials. 32 lanes covers every projection's block count in every
 // published checkpoint (max 27, at 2.7B's down_proj) with no idle-thread waste beyond that.
+// FixedQ510: static signed Q(15-f).f fixed-point activations (default Q5.10), saturating to
+// int16, then INTEGER (int32) accumulation over ternary lanes - associative, so bit-exact
+// regardless of reduction order (including simd_sum's tree order, unlike the Float path's
+// fp32 sum). Dequant by acc / (2^frac_bits * scale_w). Ported from matmulfreellmCPU/cpp/src/
+// kernels/bitlinear.cpp (ActQuant::FixedQ510) and mmfree/simd.hpp (quant_q510/
+// ternary_dot_i32/dequant_scale) - same math as the CPU/CUDA ports, validated byte-exact
+// there against mmfree-cli across all three published checkpoint sizes. rint() rounds to
+// nearest, ties to even (Metal Shading Language Spec 6.1 "Common Functions"), matching the
+// CPU/CUDA ports' nearbyintf under the default (and essentially universal) FE_TONEAREST mode.
 kernel void kernel_hgrn_ternary_mm_f32(
         device const float   * x,
         device const uchar   * wq,
@@ -2743,6 +2752,8 @@ kernel void kernel_hgrn_ternary_mm_f32(
         constant     int64_t & out_dim,
         constant     int64_t & n_tok,
         constant     int64_t & row_bytes,
+        constant     int     & act_quant,
+        constant     int     & frac_bits,
         uint3  tgpig[[threadgroup_position_in_grid]],
         ushort tiisg[[thread_index_in_simdgroup]]) {
     const int64_t gid = tgpig.x;
@@ -2757,8 +2768,35 @@ kernel void kernel_hgrn_ternary_mm_f32(
     device const float * xrow    = x  + t * in_dim;
     device const uchar * wpacked = wq + o * row_bytes;
 
-    float acc = 0.0f;
     char wblk[256];
+
+    if (act_quant == 1 /* GGML_HGRN_ACT_QUANT_FIXEDQ510 */) {
+        const float qs        = (float) (1 << frac_bits);
+        const float inv_fixed = 1.0f / (qs * scale[0]);
+
+        int acc = 0;
+        for (int64_t b = tiisg; b < n_blocks; b += 32) {
+            hgrn_tq1_unpack_block(wblk, wpacked + b * 52);
+            device const float * xblk = xrow + b * 256;
+            for (int64_t k = 0; k < 256; k++) {
+                float q = rint(xblk[k] * qs);
+                q = clamp(q, -32768.0f, 32767.0f);
+                const int  yq = (int) q;
+                const char wk = wblk[k];
+                if (wk > 0) acc += yq;
+                else if (wk < 0) acc -= yq;
+            }
+        }
+
+        acc = simd_sum(acc);
+
+        if (tiisg == 0) {
+            dst[t * out_dim + o] = (float) acc * inv_fixed;
+        }
+        return;
+    }
+
+    float acc = 0.0f;
     for (int64_t b = tiisg; b < n_blocks; b += 32) {
         hgrn_tq1_unpack_block(wblk, wpacked + b * 52);
         device const float * xblk = xrow + b * 256;

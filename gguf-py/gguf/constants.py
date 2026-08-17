@@ -267,7 +267,9 @@ class Keys:
         HEAD_SIZE = "{arch}.wkv.head_size"
 
     class HGRNBit:
-        HEAD_DIM  = "{arch}.hgrnbit.head_dim"
+        HEAD_DIM       = "{arch}.hgrnbit.head_dim"
+        ACT_QUANT_MODE = "{arch}.hgrnbit.act_quant_mode"
+        FRAC_BITS      = "{arch}.hgrnbit.frac_bits"
 
     class PosNet:
         EMBEDDING_LENGTH = "{arch}.posnet.embedding_length"

@@ -945,7 +945,9 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
                     // through ggml_hgrn_ternary_mm, not ggml_mul_mat, so probe with that op instead.
                     ggml_tensor * x_norm  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, (w->ne[0] / 52) * 256, 512);
                     ggml_tensor * scale_w = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
-                    op_tensor = ggml_hgrn_ternary_mm(ctx, x_norm, w, scale_w);
+                    // act_quant/frac_bits don't affect this probe's shape/type, so the exact
+                    // values don't matter here - Float is the cheapest to construct.
+                    op_tensor = ggml_hgrn_ternary_mm(ctx, x_norm, w, scale_w, GGML_HGRN_ACT_QUANT_FLOAT, 10);
                 } else {
                     ggml_tensor * b = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, w->ne[0], 512, w->ne[2], w->ne[3]);
                     op_tensor = ggml_mul_mat(ctx, w, b);

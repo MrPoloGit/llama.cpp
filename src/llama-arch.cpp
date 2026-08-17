@@ -323,7 +323,9 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
 
     { LLM_KV_WKV_HEAD_SIZE, "%s.wkv.head_size" },
 
-    { LLM_KV_HGRNBIT_HEAD_DIM, "%s.hgrnbit.head_dim" },
+    { LLM_KV_HGRNBIT_HEAD_DIM,       "%s.hgrnbit.head_dim" },
+    { LLM_KV_HGRNBIT_ACT_QUANT_MODE, "%s.hgrnbit.act_quant_mode" },
+    { LLM_KV_HGRNBIT_FRAC_BITS,      "%s.hgrnbit.frac_bits" },
 
     { LLM_KV_POSNET_EMBEDDING_LENGTH, "%s.posnet.embedding_length" },
     { LLM_KV_POSNET_BLOCK_COUNT,      "%s.posnet.block_count"      },

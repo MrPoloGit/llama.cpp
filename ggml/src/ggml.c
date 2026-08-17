@@ -5908,7 +5908,9 @@ struct ggml_tensor * ggml_hgrn_ternary_mm(
         struct ggml_context * ctx,
         struct ggml_tensor  * x_norm,
         struct ggml_tensor  * wq,
-        struct ggml_tensor  * scale_w) {
+        struct ggml_tensor  * scale_w,
+        enum ggml_hgrn_act_quant act_quant,
+        int                      frac_bits) {
     GGML_ASSERT(ggml_is_contiguous(x_norm));
     GGML_ASSERT(ggml_is_contiguous(wq));
     GGML_ASSERT(x_norm->type == GGML_TYPE_F32);
@@ -5921,6 +5923,9 @@ struct ggml_tensor * ggml_hgrn_ternary_mm(
 
     const int64_t ne[4] = { wq->ne[1], x_norm->ne[1], x_norm->ne[2], x_norm->ne[3] };
     struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    ggml_set_op_params_i32(result, 0, (int32_t) act_quant);
+    ggml_set_op_params_i32(result, 1, (int32_t) frac_bits);
 
     result->op     = GGML_OP_HGRN_TERNARY_MM;
     result->src[0] = x_norm;

@@ -36,18 +36,32 @@ __device__ __forceinline__ void hgrn_tq1_unpack_block(int8_t * dst, const uint8_
 // one thread per (o, t) output element, full serial dot product over in_dim (correctness-first,
 // same math as the CPU/Metal ports - see src/models/hgrnbit.cpp)
 //
-// A one-warp-per-output-element variant (each lane striding over a subset of the 256-element
-// blocks, combined with warp_reduce_sum) was tried here and measured 3-3.5x *slower* on a
-// GTX 1050 Ti (sm_61, 4GB): every published checkpoint's block count (in_dim/256) is small
-// (4-27), so most of the 32 launched lanes per output element did zero work, while total
-// resident threads - and therefore total copies of this function's 256-byte wblk scratch
-// buffer needing register/local-memory space - went up 32x for the same problem size on a
-// register-constrained card. Reverted; revisit warp-splitting only with real before/after
-// numbers on the target GPU, not by analogy to the Metal simdgroup fix (different register
-// budget, different bottleneck).
+// Two cooperative-reduction variants were tried and measured *slower* than this plain serial
+// kernel on a GTX 1050 Ti (sm_61, 4GB): a fixed 32-lane warp per output element (3-3.5x
+// slower - most lanes idle, since every published checkpoint's block count, in_dim/256, is
+// only 4-27), and a version sized to the exact block count with zero idle lanes (still
+// 1.4-2.2x slower, e.g. 1.3B's 8-block projections at a perfectly-matched GROUP=8). The
+// second result rules out "wasted lanes" as the whole story: even fully-utilized cooperative
+// threads lose here, most likely because every additional concurrently-resident thread still
+// carries its own copy of this function's 256-byte wblk scratch buffer, and that per-thread
+// register/local-memory cost outweighs whatever serial-chain time is saved on a
+// register-constrained card, for chains this short (4-27 iterations). Conclusion for this
+// hardware: no cooperative reduction at all is the fastest option. A GPU with a much larger
+// register file per SM (a modern Ampere+/workstation card, not this old 4GB Pascal laptop
+// part) might have different economics - revisit only with real before/after numbers on the
+// target GPU, not by analogy to another backend or another kernel design.
+// FixedQ510: static signed Q(15-f).f fixed-point activations (default Q5.10), saturating to
+// int16, then INTEGER (int32) accumulation over ternary lanes - associative, so bit-exact
+// regardless of reduction order. Dequant by acc / (2^frac_bits * scale_w). Ported from
+// matmulfreellmCPU/cpp/src/kernels/bitlinear.cpp (ActQuant::FixedQ510) and mmfree/simd.hpp
+// (quant_q510/ternary_dot_i32/dequant_scale) - same math as the CPU port (ggml-cpu/ops.cpp),
+// validated byte-exact there against mmfree-cli across all three published checkpoint sizes.
+// nearbyintf is a real CUDA device math function (round-to-nearest-even, matching host libm),
+// not an approximation - see the CUDA Math API guide.
 static __global__ void hgrn_ternary_mm_f32(
         const float * x, const uint8_t * wq, const float * scale, float * dst,
-        const int64_t in_dim, const int64_t out_dim, const int64_t n_tok, const int64_t row_bytes) {
+        const int64_t in_dim, const int64_t out_dim, const int64_t n_tok, const int64_t row_bytes,
+        int act_quant, int frac_bits) {
     const int64_t gid = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (gid >= out_dim * n_tok) {
         return;
@@ -60,8 +74,31 @@ static __global__ void hgrn_ternary_mm_f32(
     const float   * xrow    = x  + t * in_dim;
     const uint8_t * wpacked = wq + o * row_bytes;
 
-    float acc = 0.0f;
     int8_t wblk[256];
+
+    if (act_quant == GGML_HGRN_ACT_QUANT_FIXEDQ510) {
+        const float qs        = (float) (1 << frac_bits);
+        const float inv_fixed = 1.0f / (qs * scale[0]);
+
+        int32_t acc = 0;
+        for (int64_t b = 0; b < n_blocks; b++) {
+            hgrn_tq1_unpack_block(wblk, wpacked + b * 52);
+            const float * xblk = xrow + b * 256;
+            for (int64_t k = 0; k < 256; k++) {
+                float q = nearbyintf(xblk[k] * qs);
+                if (q > 32767.0f) q = 32767.0f;
+                else if (q < -32768.0f) q = -32768.0f;
+                const int32_t yq = (int32_t) q;
+                const int8_t  wk = wblk[k];
+                if (wk > 0) acc += yq;
+                else if (wk < 0) acc -= yq;
+            }
+        }
+        dst[t * out_dim + o] = (float) acc * inv_fixed;
+        return;
+    }
+
+    float acc = 0.0f;
     for (int64_t b = 0; b < n_blocks; b++) {
         hgrn_tq1_unpack_block(wblk, wpacked + b * 52);
         const float * xblk = xrow + b * 256;
@@ -111,6 +148,9 @@ void ggml_cuda_op_hgrn_ternary_mm(ggml_backend_cuda_context & ctx, ggml_tensor *
     GGML_ASSERT(wq->type == GGML_TYPE_I8);
     GGML_ASSERT(sc->type == GGML_TYPE_F32);
 
+    const int32_t act_quant = ggml_get_op_params_i32(dst, 0);
+    const int32_t frac_bits = ggml_get_op_params_i32(dst, 1);
+
     const int64_t in_dim    = x->ne[0];
     const int64_t out_dim   = wq->ne[1];
     const int64_t n_tok     = x->ne[1] * x->ne[2] * x->ne[3];
@@ -127,7 +167,7 @@ void ggml_cuda_op_hgrn_ternary_mm(ggml_backend_cuda_context & ctx, ggml_tensor *
     const int block_size = 256;
     const int64_t n_blocks = (n_threads_total + block_size - 1) / block_size;
 
-    hgrn_ternary_mm_f32<<<n_blocks, block_size, 0, stream>>>(x_d, wq_d, sc_d, dst_d, in_dim, out_dim, n_tok, row_bytes);
+    hgrn_ternary_mm_f32<<<n_blocks, block_size, 0, stream>>>(x_d, wq_d, sc_d, dst_d, in_dim, out_dim, n_tok, row_bytes, act_quant, frac_bits);
 }
 
 void ggml_cuda_op_hgrn_scan(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {

@@ -5,14 +5,22 @@
 // HGRN-Bit (MatMul-Free LM) ternary BitLinear + gated recurrence are ggml_hgrn_ternary_mm /
 // ggml_hgrn_scan (ggml.h), first-class ops with CPU (ggml-cpu/ops.cpp), Metal
 // (ggml-metal.metal), and CUDA (ggml-cuda/hgrn.cu) implementations, ported from
-// matmulfreellmCPU/cpp/src/kernels/{bitlinear,hgrn_scan}.cpp (ActQuant::Float mode: no
-// activation quantization, matches the published HF model). BitLinear weight rows are
+// matmulfreellmCPU/cpp/src/kernels/{bitlinear,hgrn_scan}.cpp. Float activation quant
+// (no activation quantization) matches the published HF checkpoints and is the default;
+// FixedQ510 (matmulfreellmCPU's ActQuant::FixedQ510, its default and the actual FPGA
+// datapath) is CPU-only so far - see LLM_KV_HGRNBIT_ACT_QUANT_MODE and
+// ggml_compute_forward_hgrn_ternary_mm's FixedQ510 branch. BitLinear weight rows are
 // TQ1_0-style packed (5 trits/byte, see ggml_hgrn_ternary_mm), ported from
 // matmulfreellmCPU/cpp/include/mmfree/tq1.hpp.
 
 void llama_model_hgrnbit::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
     ml.get_key(LLM_KV_HGRNBIT_HEAD_DIM,             hparams.hgrnbit_head_dim);
+    // Both optional: absent in every GGUF converted before FixedQ510 support (and in every
+    // GGUF converted without conversion/hgrnbit.py's HGRNBIT_ACT_QUANT=fixedq510 env var),
+    // in which case the hparams.h defaults (Float, frac_bits=10) preserve prior behavior.
+    ml.get_key(LLM_KV_HGRNBIT_ACT_QUANT_MODE, hparams.hgrnbit_act_quant_mode, false);
+    ml.get_key(LLM_KV_HGRNBIT_FRAC_BITS,      hparams.hgrnbit_frac_bits,      false);
 }
 
 // BitLinear weight rows are packed TQ1_0-style (see ggml_hgrn_ternary_mm): 256 ternary
@@ -84,7 +92,8 @@ ggml_tensor * llama_model_hgrnbit::graph::build_hgrn_bitlinear(
     cur = build_norm(cur, norm, nullptr, LLM_NORM_RMS, il);
     cur = ggml_cont(ctx0, cur);
 
-    ggml_tensor * y = ggml_hgrn_ternary_mm(ctx0, cur, wq, scale);
+    const auto act_quant = (ggml_hgrn_act_quant) hparams.hgrnbit_act_quant_mode;
+    ggml_tensor * y = ggml_hgrn_ternary_mm(ctx0, cur, wq, scale, act_quant, hparams.hgrnbit_frac_bits);
     cb(y, "hgrn_bitlinear", il);
 
     return y;
