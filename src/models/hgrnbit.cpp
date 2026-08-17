@@ -8,10 +8,17 @@
 // matmulfreellmCPU/cpp/src/kernels/{bitlinear,hgrn_scan}.cpp. Float activation quant
 // (no activation quantization) matches the published HF checkpoints and is the default;
 // FixedQ510 (matmulfreellmCPU's ActQuant::FixedQ510, its default and the actual FPGA
-// datapath) is CPU-only so far - see LLM_KV_HGRNBIT_ACT_QUANT_MODE and
-// ggml_compute_forward_hgrn_ternary_mm's FixedQ510 branch. BitLinear weight rows are
-// TQ1_0-style packed (5 trits/byte, see ggml_hgrn_ternary_mm), ported from
-// matmulfreellmCPU/cpp/include/mmfree/tq1.hpp.
+// datapath) is implemented on all three backends - see LLM_KV_HGRNBIT_ACT_QUANT_MODE and
+// each backend's FixedQ510 branch (ggml_compute_forward_hgrn_ternary_mm / the Metal kernel
+// in ggml-metal.metal / hgrn_ternary_mm_f32 in hgrn.cu). Read matmulfreellm-use.md's
+// "Choosing Float vs FixedQ510" section before assuming cross-backend token-for-token
+// exactness under FixedQ510 the way Float mode has - FixedQ510's hard rounding threshold
+// amplifies ordinary cross-hardware fp32 noise in the surrounding RMSNorm/recurrence math
+// into occasional greedy-decode divergence, more likely at larger model sizes. Not a
+// correctness bug in either kernel - confirmed by tracing it to floating-point
+// non-associativity, not a logic error (see that doc section for the full investigation).
+// BitLinear weight rows are TQ1_0-style packed (5 trits/byte, see ggml_hgrn_ternary_mm),
+// ported from matmulfreellmCPU/cpp/include/mmfree/tq1.hpp.
 
 void llama_model_hgrnbit::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
