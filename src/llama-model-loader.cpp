@@ -940,8 +940,16 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
             } break;
         case GGML_OP_MUL_MAT:
             {
-                ggml_tensor * b = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, w->ne[0], 512, w->ne[2], w->ne[3]);
-                op_tensor = ggml_mul_mat(ctx, w, b);
+                if (w->type == GGML_TYPE_I8) {
+                    // HGRN-Bit TQ1_0-packed ternary BitLinear weight - the graph runs these
+                    // through ggml_hgrn_ternary_mm, not ggml_mul_mat, so probe with that op instead.
+                    ggml_tensor * x_norm  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, (w->ne[0] / 52) * 256, 512);
+                    ggml_tensor * scale_w = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+                    op_tensor = ggml_hgrn_ternary_mm(ctx, x_norm, w, scale_w);
+                } else {
+                    ggml_tensor * b = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, w->ne[0], 512, w->ne[2], w->ne[3]);
+                    op_tensor = ggml_mul_mat(ctx, w, b);
+                }
             } break;
         case GGML_OP_MUL_MAT_ID:
             {
