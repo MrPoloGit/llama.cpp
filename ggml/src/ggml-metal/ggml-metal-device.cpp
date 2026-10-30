@@ -1131,7 +1131,6 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
             {
                 nsg = N_SG_MXFP4;
                 nr0 = N_R0_MXFP4;
-                smem = 32*sizeof(float);
             } break;
         case GGML_TYPE_Q2_K:
             {
@@ -1427,7 +1426,6 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id(ggml_m
             {
                 nsg = N_SG_MXFP4;
                 nr0 = N_R0_MXFP4;
-                smem = 32*sizeof(float);
             } break;
         case GGML_TYPE_Q2_K:
             {
