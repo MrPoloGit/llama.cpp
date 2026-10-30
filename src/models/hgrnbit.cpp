@@ -4,14 +4,15 @@
 
 // HGRN-Bit (MatMul-Free LM) ternary BitLinear + gated recurrence are ggml_hgrn_ternary_mm /
 // ggml_hgrn_scan (ggml.h), first-class ops with CPU (ggml-cpu/ops.cpp), Metal
-// (ggml-metal.metal), and CUDA (ggml-cuda/hgrn.cu) implementations, ported from
-// matmulfreellmCPU/cpp/src/kernels/{bitlinear,hgrn_scan}.cpp. Float activation quant
+// (ggml-metal/kernels/hgrn.metal), and CUDA (ggml-cuda/hgrn.cu) implementations, ported
+// from matmulfreellmCPU/cpp/src/kernels/{bitlinear,hgrn_scan}.cpp. Float activation quant
 // (no activation quantization) matches the published HF checkpoints and is the default;
 // FixedQ510 (matmulfreellmCPU's ActQuant::FixedQ510, its default and the actual FPGA
 // datapath) is implemented on all three backends - see LLM_KV_HGRNBIT_ACT_QUANT_MODE and
 // each backend's FixedQ510 branch (ggml_compute_forward_hgrn_ternary_mm / the Metal kernel
-// in ggml-metal.metal / hgrn_ternary_mm_f32 in hgrn.cu). Read matmulfreellm-use.md's
-// "Choosing Float vs FixedQ510" section before assuming cross-backend token-for-token
+// in kernels/hgrn.metal / hgrn_ternary_mm_f32 in hgrn.cu). Read matmulfreellm.md (in the
+// project root, one level above this llama.cpp checkout) "Choosing Float vs FixedQ510"
+// section before assuming cross-backend token-for-token
 // exactness under FixedQ510 the way Float mode has - FixedQ510's hard rounding threshold
 // amplifies ordinary cross-hardware fp32 noise in the surrounding RMSNorm/recurrence math
 // into occasional greedy-decode divergence, more likely at larger model sizes. Not a
